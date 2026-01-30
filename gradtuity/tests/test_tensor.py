@@ -8,6 +8,9 @@ import pytest
 
 from gradtuity.tensor import Tensor
 
+# Mark all tests in this module as requiring CUDA
+pytestmark = pytest.mark.requires_cuda
+
 
 class TestTensorConstruction:
     """Tests for Tensor construction from Python data."""
@@ -343,6 +346,172 @@ class TestTensorGraphFields:
         assert t.grad is None
 
 
+@pytest.mark.requires_cuda
+@pytest.mark.requires_triton
+class TestBackward:
+    """Tests for backward() method."""
+
+    def test_backward_requires_scalar(self):
+        """Test that backward() rejects non-scalar tensors."""
+        t = Tensor([1.0, 2.0, 3.0], requires_grad=True)
+        with pytest.raises(ValueError, match="scalar"):
+            t.backward()
+
+    def test_backward_requires_requires_grad(self):
+        """Test that backward() requires requires_grad=True."""
+        t = Tensor([1.0], requires_grad=False)
+        with pytest.raises(RuntimeError, match="requires_grad"):
+            t.backward()
+
+    def test_backward_seeds_grad_with_ones(self):
+        """Test that backward() seeds loss.grad with 1.0."""
+        loss = Tensor([5.0], requires_grad=True)
+        loss.backward()
+
+        assert loss.grad is not None
+        assert loss.grad.shape == (1,)
+        assert loss.grad.to_list()[0] == pytest.approx(1.0)
+
+    def test_backward_simple_linear_graph(self):
+        """Test backward on a simple linear graph: a -> b -> c (scalar).
+
+        Manually set up a graph where:
+        - a is leaf with requires_grad=True
+        - b = 2*a (simulated)
+        - c = sum(b) = scalar
+
+        Gradient should flow: dc/da = 2
+        """
+        from gradtuity.functional import zeros_like
+
+        # Leaf tensor
+        a = Tensor([1.0, 2.0], requires_grad=True)
+
+        # Intermediate (pretend it's 2*a)
+        b = Tensor([2.0, 4.0], requires_grad=False)
+
+        # Manually simulate: b = 2*a
+        # backward: a.grad += 2 * out_grad
+        def b_backward(out_grad):
+            if a.grad is None:
+                a.grad = zeros_like(a)
+            # Simulate accumulating 2 * out_grad into a.grad
+            # For simplicity, we'll do this by reading out_grad and writing to a.grad
+            grad_vals = out_grad.to_list()
+            a_grad_vals = a.grad.to_list()
+            new_vals = [av + 2.0 * gv for av, gv in zip(a_grad_vals, grad_vals)]
+            a.grad = Tensor(new_vals)
+
+        b._set_graph(parents=(a,), backward_fn=b_backward)
+
+        # Output scalar (pretend it's sum(b) = 6.0)
+        c = Tensor([6.0], requires_grad=False)
+
+        # Manually simulate: c = sum(b)
+        # backward: b.grad += broadcast(out_grad) = [1.0, 1.0]
+        def c_backward(out_grad):
+            if b.grad is None:
+                b.grad = zeros_like(b)
+            # sum backward broadcasts the scalar grad
+            scalar_val = out_grad.to_list()[0]
+            b_grad_vals = b.grad.to_list()
+            new_vals = [bv + scalar_val for bv in b_grad_vals]
+            b.grad = Tensor(new_vals)
+
+        c._set_graph(parents=(b,), backward_fn=c_backward)
+
+        # Run backward
+        c.backward()
+
+        # Check: b.grad should be [1.0, 1.0] from sum backward
+        assert b.grad is not None
+        assert b.grad.to_list() == pytest.approx([1.0, 1.0])
+
+        # Check: a.grad should be [2.0, 2.0] (2 * b.grad)
+        assert a.grad is not None
+        assert a.grad.to_list() == pytest.approx([2.0, 2.0])
+
+
+@pytest.mark.requires_cuda
+class TestSetGraph:
+    """Tests for _set_graph() conditional graph construction."""
+
+    def test_set_graph_with_requires_grad_parent(self):
+        """Test that _set_graph sets requires_grad=True when parent requires grad."""
+        parent = Tensor([1.0, 2.0], requires_grad=True)
+        child = Tensor([2.0, 3.0], requires_grad=False)
+
+        child._set_graph(
+            parents=(parent,),
+            backward_fn=lambda out_grad: None,
+        )
+
+        assert child.requires_grad is True
+        assert child._parents == (parent,)
+        assert child._backward is not None
+
+    def test_set_graph_without_requires_grad_parent(self):
+        """Test that _set_graph keeps requires_grad=False when no parent requires grad."""
+        parent = Tensor([1.0, 2.0], requires_grad=False)
+        child = Tensor([2.0, 3.0], requires_grad=False)
+
+        child._set_graph(
+            parents=(parent,),
+            backward_fn=lambda out_grad: None,
+        )
+
+        assert child.requires_grad is False
+        # Graph fields should remain empty
+        assert child._parents == ()
+        assert child._backward is None
+
+    def test_set_graph_multiple_parents_any_requires_grad(self):
+        """Test _set_graph with multiple parents where one requires grad."""
+        p1 = Tensor([1.0], requires_grad=False)
+        p2 = Tensor([2.0], requires_grad=True)
+        p3 = Tensor([3.0], requires_grad=False)
+
+        child = Tensor([6.0], requires_grad=False)
+        child._set_graph(
+            parents=(p1, p2, p3),
+            backward_fn=lambda out_grad: None,
+        )
+
+        # any() of requires_grad = True
+        assert child.requires_grad is True
+        assert child._parents == (p1, p2, p3)
+
+    def test_set_graph_multiple_parents_none_requires_grad(self):
+        """Test _set_graph with multiple parents where none require grad."""
+        p1 = Tensor([1.0], requires_grad=False)
+        p2 = Tensor([2.0], requires_grad=False)
+
+        child = Tensor([3.0], requires_grad=False)
+        child._set_graph(
+            parents=(p1, p2),
+            backward_fn=lambda out_grad: None,
+        )
+
+        # No parent requires grad
+        assert child.requires_grad is False
+        assert child._parents == ()
+        assert child._backward is None
+
+    def test_set_graph_with_ctx(self):
+        """Test that _set_graph stores ctx when provided."""
+        parent = Tensor([1.0], requires_grad=True)
+        child = Tensor([2.0], requires_grad=False)
+
+        ctx = {"saved_for_backward": parent}
+        child._set_graph(
+            parents=(parent,),
+            backward_fn=lambda out_grad: None,
+            ctx=ctx,
+        )
+
+        assert child._ctx == ctx
+
+
 class TestTensorMemorySafety:
     """Tests for memory management and safety."""
 
@@ -368,3 +537,291 @@ class TestTensorMemorySafety:
         assert result[0][0] == pytest.approx(0.0)
         assert result[0][99] == pytest.approx(99.0)
         assert result[999][99] == pytest.approx(99999.0)
+
+
+@pytest.mark.requires_cuda
+@pytest.mark.requires_triton
+class TestAdd:
+    """Tests for elementwise add operation."""
+
+    def test_add_1d_forward(self):
+        """Test add forward on 1D tensors."""
+        a = Tensor([1.0, 2.0, 3.0])
+        b = Tensor([4.0, 5.0, 6.0])
+
+        c = a.add(b)
+
+        assert c.shape == (3,)
+        assert c.to_list() == pytest.approx([5.0, 7.0, 9.0])
+
+    def test_add_2d_forward(self):
+        """Test add forward on 2D tensors."""
+        a = Tensor([[1.0, 2.0], [3.0, 4.0]])
+        b = Tensor([[0.1, 0.2], [0.3, 0.4]])
+
+        c = a.add(b)
+
+        assert c.shape == (2, 2)
+        result = c.to_list()
+        assert result[0] == pytest.approx([1.1, 2.2])
+        assert result[1] == pytest.approx([3.3, 4.4])
+
+    def test_add_shape_mismatch_raises(self):
+        """Test that add raises error for mismatched shapes."""
+        a = Tensor([1.0, 2.0, 3.0])
+        b = Tensor([1.0, 2.0])
+
+        with pytest.raises(ValueError, match="Shape mismatch"):
+            a.add(b)
+
+    def test_add_backward_both_require_grad(self):
+        """Test add backward when both inputs require grad."""
+        a = Tensor([1.0, 2.0, 3.0], requires_grad=True)
+        b = Tensor([4.0, 5.0, 6.0], requires_grad=True)
+
+        c = a.add(b)
+        # Simulate sum to get scalar
+        # For now, manually set c.grad and call backward logic
+        assert c.requires_grad is True
+
+        # Create a scalar by adding all elements (simulated)
+        # We'll test full backward through the graph
+        from gradtuity.functional import ones_like
+
+        c.grad = ones_like(c)
+        c._backward(c.grad)
+
+        # Both grads should be [1.0, 1.0, 1.0]
+        assert a.grad is not None
+        assert a.grad.to_list() == pytest.approx([1.0, 1.0, 1.0])
+        assert b.grad is not None
+        assert b.grad.to_list() == pytest.approx([1.0, 1.0, 1.0])
+
+    def test_add_backward_one_requires_grad(self):
+        """Test add backward when only one input requires grad."""
+        a = Tensor([1.0, 2.0], requires_grad=True)
+        b = Tensor([3.0, 4.0], requires_grad=False)
+
+        c = a.add(b)
+        assert c.requires_grad is True
+
+        from gradtuity.functional import ones_like
+
+        c.grad = ones_like(c)
+        c._backward(c.grad)
+
+        assert a.grad is not None
+        assert a.grad.to_list() == pytest.approx([1.0, 1.0])
+        assert b.grad is None  # b doesn't require grad
+
+    def test_add_no_grad(self):
+        """Test add with no grad tracking."""
+        a = Tensor([1.0, 2.0])
+        b = Tensor([3.0, 4.0])
+
+        c = a.add(b)
+
+        assert c.requires_grad is False
+        assert c._parents == ()
+        assert c._backward is None
+
+    def test_add_accumulates_grad(self):
+        """Test that add backward accumulates (doesn't replace) gradients."""
+        a = Tensor([1.0, 2.0], requires_grad=True)
+        b = Tensor([3.0, 4.0], requires_grad=True)
+
+        # Pre-set some gradients
+        a.grad = Tensor([10.0, 20.0])
+        b.grad = Tensor([30.0, 40.0])
+
+        c = a.add(b)
+
+        from gradtuity.functional import ones_like
+
+        c.grad = ones_like(c)
+        c._backward(c.grad)
+
+        # Grads should be accumulated: original + 1.0
+        assert a.grad.to_list() == pytest.approx([11.0, 21.0])
+        assert b.grad.to_list() == pytest.approx([31.0, 41.0])
+
+
+@pytest.mark.requires_cuda
+@pytest.mark.requires_triton
+class TestRelu:
+    """Tests for ReLU operation."""
+
+    def test_relu_forward_positive(self):
+        """Test relu forward with positive values."""
+        y = Tensor([1.0, 2.0, 3.0])
+        z = y.relu()
+
+        assert z.shape == (3,)
+        assert z.to_list() == pytest.approx([1.0, 2.0, 3.0])
+
+    def test_relu_forward_negative(self):
+        """Test relu forward with negative values."""
+        y = Tensor([-1.0, -2.0, -3.0])
+        z = y.relu()
+
+        assert z.to_list() == pytest.approx([0.0, 0.0, 0.0])
+
+    def test_relu_forward_mixed(self):
+        """Test relu forward with mixed positive/negative values."""
+        y = Tensor([-2.0, -1.0, 0.0, 1.0, 2.0])
+        z = y.relu()
+
+        assert z.to_list() == pytest.approx([0.0, 0.0, 0.0, 1.0, 2.0])
+
+    def test_relu_forward_2d(self):
+        """Test relu forward on 2D tensor."""
+        y = Tensor([[-1.0, 2.0], [3.0, -4.0]])
+        z = y.relu()
+
+        assert z.shape == (2, 2)
+        result = z.to_list()
+        assert result[0] == pytest.approx([0.0, 2.0])
+        assert result[1] == pytest.approx([3.0, 0.0])
+
+    def test_relu_backward_positive(self):
+        """Test relu backward with positive input (grad passes through)."""
+        y = Tensor([1.0, 2.0, 3.0], requires_grad=True)
+        z = y.relu()
+
+        assert z.requires_grad is True
+
+        from gradtuity.functional import ones_like
+
+        z.grad = ones_like(z)
+        z._backward(z.grad)
+
+        # All positive -> mask is all 1s -> grad = [1, 1, 1]
+        assert y.grad is not None
+        assert y.grad.to_list() == pytest.approx([1.0, 1.0, 1.0])
+
+    def test_relu_backward_negative(self):
+        """Test relu backward with negative input (grad blocked)."""
+        y = Tensor([-1.0, -2.0, -3.0], requires_grad=True)
+        z = y.relu()
+
+        from gradtuity.functional import ones_like
+
+        z.grad = ones_like(z)
+        z._backward(z.grad)
+
+        # All negative -> mask is all 0s -> grad = [0, 0, 0]
+        assert y.grad is not None
+        assert y.grad.to_list() == pytest.approx([0.0, 0.0, 0.0])
+
+    def test_relu_backward_mixed(self):
+        """Test relu backward with mixed values."""
+        y = Tensor([-1.0, 2.0, -3.0, 4.0], requires_grad=True)
+        z = y.relu()
+
+        from gradtuity.functional import ones_like
+
+        z.grad = ones_like(z)
+        z._backward(z.grad)
+
+        # mask = [0, 1, 0, 1] -> grad = [0, 1, 0, 1]
+        assert y.grad.to_list() == pytest.approx([0.0, 1.0, 0.0, 1.0])
+
+    def test_relu_backward_zero_input(self):
+        """Test relu backward at exactly zero (should be 0 gradient)."""
+        y = Tensor([0.0, 1.0, -1.0], requires_grad=True)
+        z = y.relu()
+
+        from gradtuity.functional import ones_like
+
+        z.grad = ones_like(z)
+        z._backward(z.grad)
+
+        # 0 is not > 0, so mask at index 0 is 0
+        assert y.grad.to_list() == pytest.approx([0.0, 1.0, 0.0])
+
+    def test_relu_no_grad(self):
+        """Test relu with no grad tracking."""
+        y = Tensor([1.0, -1.0, 2.0])
+        z = y.relu()
+
+        assert z.requires_grad is False
+        assert z._parents == ()
+        assert z._backward is None
+        assert z.to_list() == pytest.approx([1.0, 0.0, 2.0])
+
+    def test_relu_backward_accumulates(self):
+        """Test that relu backward accumulates gradients."""
+        y = Tensor([1.0, 2.0], requires_grad=True)
+        y.grad = Tensor([10.0, 20.0])  # Pre-existing grad
+
+        z = y.relu()
+
+        from gradtuity.functional import ones_like
+
+        z.grad = ones_like(z)
+        z._backward(z.grad)
+
+        # Accumulated: [10+1, 20+1] = [11, 21]
+        assert y.grad.to_list() == pytest.approx([11.0, 21.0])
+
+    def test_relu_backward_scales_with_out_grad(self):
+        """Test that relu backward properly scales with output gradient."""
+        y = Tensor([1.0, -1.0, 2.0], requires_grad=True)
+        z = y.relu()
+
+        # Use non-unit gradient
+        z.grad = Tensor([2.0, 3.0, 4.0])
+        z._backward(z.grad)
+
+        # mask = [1, 0, 1], grad = out_grad * mask = [2, 0, 4]
+        assert y.grad.to_list() == pytest.approx([2.0, 0.0, 4.0])
+
+
+@pytest.mark.requires_cuda
+@pytest.mark.requires_triton
+class TestAddReluIntegration:
+    """Integration tests combining add and relu operations."""
+
+    def test_add_then_relu_forward(self):
+        """Test forward: relu(a + b)."""
+        a = Tensor([-2.0, -1.0, 0.0, 1.0])
+        b = Tensor([1.0, 1.0, 1.0, 1.0])
+
+        c = a.add(b)  # [-1, 0, 1, 2]
+        z = c.relu()  # [0, 0, 1, 2]
+
+        assert z.to_list() == pytest.approx([0.0, 0.0, 1.0, 2.0])
+
+    def test_add_then_relu_backward(self):
+        """Test backward through relu(a + b)."""
+        a = Tensor([-2.0, 1.0], requires_grad=True)
+        b = Tensor([1.0, 1.0], requires_grad=True)
+
+        c = a.add(b)  # [-1, 2]
+        z = c.relu()  # [0, 2]
+
+        # Backward from z
+        from gradtuity.functional import ones_like
+
+        z.grad = ones_like(z)
+
+        # Manual backward traversal (simulating loss.backward())
+        z._backward(z.grad)  # c.grad = [0, 1] (relu mask)
+        c._backward(c.grad)  # a.grad = c.grad, b.grad = c.grad
+
+        # a.grad and b.grad should be [0, 1] (blocked at first element)
+        assert a.grad.to_list() == pytest.approx([0.0, 1.0])
+        assert b.grad.to_list() == pytest.approx([0.0, 1.0])
+
+    def test_shared_input_add(self):
+        """Test y = x + x (shared subgraph), grad should be 2*out_grad."""
+        x = Tensor([1.0, 2.0, 3.0], requires_grad=True)
+        y = x.add(x)
+
+        from gradtuity.functional import ones_like
+
+        y.grad = ones_like(y)
+        y._backward(y.grad)
+
+        # x appears twice, so grad = 1 + 1 = 2
+        assert x.grad.to_list() == pytest.approx([2.0, 2.0, 2.0])

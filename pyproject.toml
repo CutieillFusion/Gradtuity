@@ -5,6 +5,13 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "pytest>=9.0.2",
+    "numpy>=2.4.1",
+    "torch>=2.10.0",
     "triton>=3.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.14",
+    "pytest>=9.0.2",
 ]

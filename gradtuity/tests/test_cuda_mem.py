@@ -16,6 +16,9 @@ from gradtuity.cuda_mem import (
     cuda_memcpy_dtod,
 )
 
+# Mark all tests in this module as requiring CUDA
+pytestmark = pytest.mark.requires_cuda
+
 
 class TestCudaMalloc:
     """Tests for cuda_malloc function."""

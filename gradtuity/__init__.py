@@ -1,5 +1,27 @@
 """Gradtuity: From-scratch tensor autodiff engine with Triton kernels."""
 
 from .tensor import Tensor
+from .functional import (
+    zeros,
+    zeros_like,
+    ones,
+    ones_like,
+    randn,
+    full,
+    full_like,
+    zero_grad,
+    sgd_step,
+)
 
-__all__ = ["Tensor"]
+__all__ = [
+    "Tensor",
+    "zeros",
+    "zeros_like",
+    "ones",
+    "ones_like",
+    "randn",
+    "full",
+    "full_like",
+    "zero_grad",
+    "sgd_step",
+]
