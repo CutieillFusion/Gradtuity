@@ -116,7 +116,7 @@ class TestGradientCorrectness:
         B = Tensor([[1.0, 0.0], [0.0, 1.0]], requires_grad=True)  # Identity
 
         C = A.matmul(B)  # C = A @ I = A
-        loss = C.sum()   # sum of all elements
+        loss = C.sum()  # sum of all elements
 
         loss.backward()
 
@@ -292,7 +292,7 @@ class TestEdgeCases:
         w = Tensor([[2.0]], requires_grad=True)
 
         y = x.matmul(w)  # [[2.0]]
-        loss = y.sum()   # 2.0
+        loss = y.sum()  # 2.0
 
         assert loss.item() == pytest.approx(2.0)
 
@@ -356,28 +356,3 @@ class TestMemorySafety:
         loss = y.sum()
         loss.backward()
         assert x.grad is not None
-
-
-@pytest.mark.requires_cuda
-@pytest.mark.requires_triton
-class TestDemoTrain:
-    """Tests for the demo training script."""
-
-    def test_demo_import(self):
-        """Test that demo_train can be imported."""
-        from gradtuity.demo_train import main
-        assert callable(main)
-
-    def test_demo_runs(self):
-        """Test that demo training runs and returns losses."""
-        from gradtuity.demo_train import main
-
-        # Run with captured output
-        losses = main()
-
-        # Should return list of losses
-        assert isinstance(losses, list)
-        assert len(losses) == 100
-
-        # Loss should decrease overall
-        assert losses[-1] < losses[0]

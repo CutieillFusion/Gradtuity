@@ -6,6 +6,9 @@ Includes:
 - relu_kernel: ReLU forward (Z = max(Y, 0))
 - relu_backward_kernel: ReLU backward with accumulation (dY += dZ * (Y > 0))
 - add_inplace_kernel: In-place addition for gradient accumulation (A += B)
+- mul_kernel: Elementwise multiplication (C = A * B)
+- mul_scalar_kernel: Scalar multiplication (C = A * scalar)
+- mul_backward_kernel: Elementwise multiply backward with accumulation
 """
 
 import triton
@@ -131,3 +134,128 @@ def add_inplace_kernel(
     a = a + b
 
     tl.store(a_ptr + offsets, a, mask=mask)
+
+
+@triton.jit
+def mul_kernel(
+    a_ptr: tl.pointer_type(tl.float32),
+    b_ptr: tl.pointer_type(tl.float32),
+    c_ptr: tl.pointer_type(tl.float32),
+    numel: tl.int32,
+    BLOCK: tl.constexpr,
+):
+    """
+    Elementwise multiplication: C = A * B
+
+    Args:
+        a_ptr: First input tensor GPU pointer (float32*).
+        b_ptr: Second input tensor GPU pointer (float32*).
+        c_ptr: Output tensor GPU pointer (float32*).
+        numel: Total number of elements.
+        BLOCK: Block size (compile-time constant).
+    """
+    pid = tl.program_id(0)
+    offsets = pid * BLOCK + tl.arange(0, BLOCK)
+    mask = offsets < numel
+
+    a = tl.load(a_ptr + offsets, mask=mask)
+    b = tl.load(b_ptr + offsets, mask=mask)
+    c = a * b
+
+    tl.store(c_ptr + offsets, c, mask=mask)
+
+
+@triton.jit
+def mul_scalar_kernel(
+    a_ptr: tl.pointer_type(tl.float32),
+    scalar: tl.float32,
+    c_ptr: tl.pointer_type(tl.float32),
+    numel: tl.int32,
+    BLOCK: tl.constexpr,
+):
+    """
+    Scalar multiplication: C = A * scalar
+
+    Args:
+        a_ptr: Input tensor GPU pointer (float32*).
+        scalar: Scalar value to multiply by.
+        c_ptr: Output tensor GPU pointer (float32*).
+        numel: Total number of elements.
+        BLOCK: Block size (compile-time constant).
+    """
+    pid = tl.program_id(0)
+    offsets = pid * BLOCK + tl.arange(0, BLOCK)
+    mask = offsets < numel
+
+    a = tl.load(a_ptr + offsets, mask=mask)
+    c = a * scalar
+
+    tl.store(c_ptr + offsets, c, mask=mask)
+
+
+@triton.jit
+def mul_backward_kernel(
+    grad_ptr: tl.pointer_type(tl.float32),
+    out_grad_ptr: tl.pointer_type(tl.float32),
+    other_ptr: tl.pointer_type(tl.float32),
+    numel: tl.int32,
+    BLOCK: tl.constexpr,
+):
+    """
+    Elementwise multiply backward with accumulation: grad += out_grad * other
+
+    For C = A * B:
+    - dA += dC * B (call with other_ptr = B)
+    - dB += dC * A (call with other_ptr = A)
+
+    Args:
+        grad_ptr: Gradient to accumulate into (float32*), modified in-place.
+        out_grad_ptr: Upstream gradient (float32*).
+        other_ptr: The other operand for gradient computation (float32*).
+        numel: Total number of elements.
+        BLOCK: Block size (compile-time constant).
+    """
+    pid = tl.program_id(0)
+    offsets = pid * BLOCK + tl.arange(0, BLOCK)
+    mask = offsets < numel
+
+    grad = tl.load(grad_ptr + offsets, mask=mask)
+    out_grad = tl.load(out_grad_ptr + offsets, mask=mask)
+    other = tl.load(other_ptr + offsets, mask=mask)
+
+    grad = grad + out_grad * other
+
+    tl.store(grad_ptr + offsets, grad, mask=mask)
+
+
+@triton.jit
+def scale_backward_kernel(
+    grad_ptr: tl.pointer_type(tl.float32),
+    out_grad_ptr: tl.pointer_type(tl.float32),
+    scalar: tl.float32,
+    numel: tl.int32,
+    BLOCK: tl.constexpr,
+):
+    """
+    Scalar multiply backward with accumulation: grad += out_grad * scalar
+
+    For C = A * scalar:
+    - dA += dC * scalar
+
+    Args:
+        grad_ptr: Gradient to accumulate into (float32*), modified in-place.
+        out_grad_ptr: Upstream gradient (float32*).
+        scalar: The scalar value used in forward pass.
+        numel: Total number of elements.
+        BLOCK: Block size (compile-time constant).
+    """
+    pid = tl.program_id(0)
+    offsets = pid * BLOCK + tl.arange(0, BLOCK)
+    mask = offsets < numel
+
+    grad = tl.load(grad_ptr + offsets, mask=mask)
+    out_grad = tl.load(out_grad_ptr + offsets, mask=mask)
+
+    grad = grad + out_grad * scalar
+
+    tl.store(grad_ptr + offsets, grad, mask=mask)

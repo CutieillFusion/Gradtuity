@@ -57,10 +57,10 @@ def main():
     losses = []
     for i in range(num_iterations):
         # Forward pass: Z = relu(X @ W + b)
-        h = X.matmul(W)         # Linear: (batch, in) @ (in, out) -> (batch, out)
-        y = h.add_bias(b)       # Add bias: (batch, out) + (out,) -> (batch, out)
-        z = y.relu()            # ReLU activation
-        loss = z.sum()          # Sum all activations as loss
+        h = X.matmul(W)  # Linear: (batch, in) @ (in, out) -> (batch, out)
+        y = h.add_bias(b)  # Add bias: (batch, out) + (out,) -> (batch, out)
+        z = y.relu()  # ReLU activation
+        loss = z.sum()  # Sum all activations as loss
 
         # Get scalar loss value
         loss_val = loss.item()
@@ -71,8 +71,8 @@ def main():
             print(f"  iter {i:3d}: loss = {loss_val:.4f}")
 
         # Backward pass
-        zero_grad([W, b])       # Zero gradients
-        loss.backward()         # Compute gradients
+        zero_grad([W, b])  # Zero gradients
+        loss.backward()  # Compute gradients
 
         # SGD update
         sgd_step([W, b], lr=learning_rate)

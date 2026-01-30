@@ -317,7 +317,9 @@ class Tensor:
         """
         # Validate shapes
         if self.ndim != 2:
-            raise ValueError(f"matmul requires 2D tensors, got self.shape={self._shape}")
+            raise ValueError(
+                f"matmul requires 2D tensors, got self.shape={self._shape}"
+            )
         if other.ndim != 2:
             raise ValueError(
                 f"matmul requires 2D tensors, got other.shape={other._shape}"
@@ -387,9 +389,7 @@ class Tensor:
                 bt_ptr = cuda_malloc(b_tensor._numel * 4)
                 bt_numel = b_tensor._numel
                 grid_t = (triton.cdiv(bt_numel, 256),)
-                transpose2d_kernel[grid_t](
-                    b_tensor._ptr, bt_ptr, K, N, BLOCK=256
-                )
+                transpose2d_kernel[grid_t](b_tensor._ptr, bt_ptr, K, N, BLOCK=256)
 
                 # Compute dA_contrib = out_grad @ B^T: (M, N) @ (N, K) -> (M, K)
                 da_ptr = cuda_malloc(a_tensor._numel * 4)
@@ -432,9 +432,7 @@ class Tensor:
                 at_ptr = cuda_malloc(a_tensor._numel * 4)
                 at_numel = a_tensor._numel
                 grid_t = (triton.cdiv(at_numel, 256),)
-                transpose2d_kernel[grid_t](
-                    a_tensor._ptr, at_ptr, M, K, BLOCK=256
-                )
+                transpose2d_kernel[grid_t](a_tensor._ptr, at_ptr, M, K, BLOCK=256)
 
                 # Compute dB_contrib = A^T @ out_grad: (K, M) @ (M, N) -> (K, N)
                 db_ptr = cuda_malloc(b_tensor._numel * 4)
@@ -489,9 +487,7 @@ class Tensor:
         """
         # Validate shapes match
         if self._shape != other._shape:
-            raise ValueError(
-                f"Shape mismatch for add: {self._shape} vs {other._shape}"
-            )
+            raise ValueError(f"Shape mismatch for add: {self._shape} vs {other._shape}")
 
         # Import here to avoid circular imports
         import triton
@@ -669,7 +665,10 @@ class Tensor:
                     input_tensor.grad = zeros_like(input_tensor)
                 grid = lambda meta: (triton.cdiv(input_tensor._numel, meta["BLOCK"]),)
                 add_inplace_kernel[grid](
-                    input_tensor.grad._ptr, out_grad._ptr, input_tensor._numel, BLOCK=256
+                    input_tensor.grad._ptr,
+                    out_grad._ptr,
+                    input_tensor._numel,
+                    BLOCK=256,
                 )
 
             # db += sum over axis 0 of out_grad
@@ -688,6 +687,154 @@ class Tensor:
 
         out._set_graph(parents=(self, bias), backward_fn=_backward)
         return out
+
+    def mul(self, other: "Tensor") -> "Tensor":
+        """
+        Elementwise multiplication: C = self * other
+
+        Both tensors must have the same shape.
+
+        Args:
+            other: Tensor to multiply, must have same shape as self.
+
+        Returns:
+            New tensor containing the elementwise product.
+
+        Raises:
+            ValueError: If shapes don't match.
+        """
+        # Validate shapes match
+        if self._shape != other._shape:
+            raise ValueError(f"Shape mismatch for mul: {self._shape} vs {other._shape}")
+
+        # Import here to avoid circular imports
+        import triton
+
+        from .cuda_mem import cuda_malloc
+        from .functional import zeros_like
+        from .kernels.elemwise_kernels import mul_backward_kernel, mul_kernel
+
+        # Allocate output
+        out_ptr = cuda_malloc(self._nbytes)
+        out = Tensor._from_ptr(out_ptr, self._shape, owns_memory=True)
+
+        # Launch kernel
+        grid = lambda meta: (triton.cdiv(self._numel, meta["BLOCK"]),)
+        mul_kernel[grid](self._ptr, other._ptr, out._ptr, self._numel, BLOCK=256)
+
+        # Capture for backward
+        a_tensor = self
+        b_tensor = other
+
+        def _backward(out_grad: Tensor) -> None:
+            # dA += out_grad * B, dB += out_grad * A
+            if a_tensor.requires_grad:
+                if a_tensor.grad is None:
+                    a_tensor.grad = zeros_like(a_tensor)
+                grid = lambda meta: (triton.cdiv(a_tensor._numel, meta["BLOCK"]),)
+                mul_backward_kernel[grid](
+                    a_tensor.grad._ptr,
+                    out_grad._ptr,
+                    b_tensor._ptr,
+                    a_tensor._numel,
+                    BLOCK=256,
+                )
+
+            if b_tensor.requires_grad:
+                if b_tensor.grad is None:
+                    b_tensor.grad = zeros_like(b_tensor)
+                grid = lambda meta: (triton.cdiv(b_tensor._numel, meta["BLOCK"]),)
+                mul_backward_kernel[grid](
+                    b_tensor.grad._ptr,
+                    out_grad._ptr,
+                    a_tensor._ptr,
+                    b_tensor._numel,
+                    BLOCK=256,
+                )
+
+        out._set_graph(parents=(self, other), backward_fn=_backward)
+        return out
+
+    def scale(self, scalar: float) -> "Tensor":
+        """
+        Multiply tensor by a scalar: C = self * scalar
+
+        Args:
+            scalar: The scalar value to multiply by.
+
+        Returns:
+            New tensor containing the scaled values.
+        """
+        # Import here to avoid circular imports
+        import triton
+
+        from .cuda_mem import cuda_malloc
+        from .functional import zeros_like
+        from .kernels.elemwise_kernels import mul_scalar_kernel, scale_backward_kernel
+
+        # Allocate output
+        out_ptr = cuda_malloc(self._nbytes)
+        out = Tensor._from_ptr(out_ptr, self._shape, owns_memory=True)
+
+        # Launch kernel
+        grid = lambda meta: (triton.cdiv(self._numel, meta["BLOCK"]),)
+        mul_scalar_kernel[grid](self._ptr, scalar, out._ptr, self._numel, BLOCK=256)
+
+        # Capture for backward
+        input_tensor = self
+        scale_val = scalar
+
+        def _backward(out_grad: Tensor) -> None:
+            # dA += out_grad * scalar
+            if input_tensor.requires_grad:
+                if input_tensor.grad is None:
+                    input_tensor.grad = zeros_like(input_tensor)
+                grid = lambda meta: (triton.cdiv(input_tensor._numel, meta["BLOCK"]),)
+                scale_backward_kernel[grid](
+                    input_tensor.grad._ptr,
+                    out_grad._ptr,
+                    scale_val,
+                    input_tensor._numel,
+                    BLOCK=256,
+                )
+
+        out._set_graph(parents=(self,), backward_fn=_backward)
+        return out
+
+    # -------------------------------------------------------------------------
+    # Operator overloads
+    # -------------------------------------------------------------------------
+
+    def __add__(self, other: "Tensor") -> "Tensor":
+        """Addition: self + other"""
+        return self.add(other)
+
+    def __radd__(self, other: "Tensor") -> "Tensor":
+        """Reverse addition: other + self"""
+        return self.add(other)
+
+    def __mul__(self, other):
+        """Multiplication: self * other (tensor or scalar)"""
+        if isinstance(other, Tensor):
+            return self.mul(other)
+        else:
+            return self.scale(float(other))
+
+    def __rmul__(self, other):
+        """Reverse multiplication: other * self"""
+        return self.__mul__(other)
+
+    def __neg__(self) -> "Tensor":
+        """Negation: -self"""
+        return self.scale(-1.0)
+
+    def __sub__(self, other: "Tensor") -> "Tensor":
+        """Subtraction: self - other"""
+        return self.add(other.scale(-1.0))
+
+    def __rsub__(self, other: "Tensor") -> "Tensor":
+        """Reverse subtraction: other - self"""
+        return other.add(self.scale(-1.0))
 
     def to_list(self) -> list:
         """

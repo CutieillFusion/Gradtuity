@@ -1132,17 +1132,21 @@ class TestMatmul:
     def test_matmul_forward_batch_vector(self):
         """Test matmul typical case: batch of vectors times weight matrix."""
         # X: (batch=4, in=3) @ W: (in=3, out=2) -> (4, 2)
-        x = Tensor([
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0],
-            [1.0, 1.0, 1.0],
-        ])  # (4, 3)
-        w = Tensor([
-            [1.0, 2.0],
-            [3.0, 4.0],
-            [5.0, 6.0],
-        ])  # (3, 2)
+        x = Tensor(
+            [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [1.0, 1.0, 1.0],
+            ]
+        )  # (4, 3)
+        w = Tensor(
+            [
+                [1.0, 2.0],
+                [3.0, 4.0],
+                [5.0, 6.0],
+            ]
+        )  # (3, 2)
 
         y = x.matmul(w)
 

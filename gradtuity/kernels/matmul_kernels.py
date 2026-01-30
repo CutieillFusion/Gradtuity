@@ -114,7 +114,7 @@ def transpose2d_kernel(
 
     # Compute source (i, j) from flat index
     i = offsets // cols  # row in source
-    j = offsets % cols   # col in source
+    j = offsets % cols  # col in source
 
     # Load from source[i, j]
     src_idx = i * cols + j

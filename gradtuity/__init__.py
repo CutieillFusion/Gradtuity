@@ -12,6 +12,7 @@ from .functional import (
     zero_grad,
     sgd_step,
 )
+from .nn import Module, Linear, MLP
 
 __all__ = [
     "Tensor",
@@ -24,4 +25,7 @@ __all__ = [
     "full_like",
     "zero_grad",
     "sgd_step",
+    "Module",
+    "Linear",
+    "MLP",
 ]

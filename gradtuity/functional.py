@@ -97,9 +97,10 @@ def randn(
     shape: tuple[int, ...],
     requires_grad: bool = False,
     seed: int | None = None,
+    std: float = 1.0,
 ) -> Tensor:
     """
-    Generate a tensor with random normal values (mean=0, std=1).
+    Generate a tensor with random normal values (mean=0, std=std).
 
     Uses Python's random module for generation, then transfers to GPU.
 
@@ -107,6 +108,7 @@ def randn(
         shape: Shape of the tensor (rank 1 or 2).
         requires_grad: Whether to track gradients.
         seed: Optional random seed for reproducibility.
+        std: Standard deviation of the normal distribution (default 1.0).
 
     Returns:
         Tensor with random normal values.
@@ -124,8 +126,8 @@ def randn(
     for s in shape:
         numel *= s
 
-    # Generate random normal values on CPU
-    data = [random.gauss(0, 1) for _ in range(numel)]
+    # Generate random normal values on CPU with specified std
+    data = [random.gauss(0, std) for _ in range(numel)]
 
     # Pack to bytes and copy to GPU
     host_bytes = struct.pack(f"{numel}f", *data)
