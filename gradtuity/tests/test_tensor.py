@@ -1093,3 +1093,192 @@ class TestEndToEndBackward:
 
         # b.grad = sum over rows of relu_mask = [0+1, 1+1] = [1, 2]
         assert b.grad.to_list() == pytest.approx([1.0, 2.0])
+
+
+@pytest.mark.requires_cuda
+@pytest.mark.requires_triton
+class TestMatmul:
+    """Tests for matrix multiplication operation."""
+
+    def test_matmul_forward_small(self):
+        """Test matmul forward with small matrices."""
+        # A: (2, 3) @ B: (3, 2) -> C: (2, 2)
+        a = Tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])  # (2, 3)
+        b = Tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])  # (3, 2)
+
+        c = a.matmul(b)
+
+        assert c.shape == (2, 2)
+        # Manual calculation:
+        # c[0,0] = 1*1 + 2*3 + 3*5 = 1 + 6 + 15 = 22
+        # c[0,1] = 1*2 + 2*4 + 3*6 = 2 + 8 + 18 = 28
+        # c[1,0] = 4*1 + 5*3 + 6*5 = 4 + 15 + 30 = 49
+        # c[1,1] = 4*2 + 5*4 + 6*6 = 8 + 20 + 36 = 64
+        result = c.to_list()
+        assert result[0] == pytest.approx([22.0, 28.0])
+        assert result[1] == pytest.approx([49.0, 64.0])
+
+    def test_matmul_forward_identity(self):
+        """Test matmul with identity matrix."""
+        a = Tensor([[1.0, 2.0], [3.0, 4.0]])
+        identity = Tensor([[1.0, 0.0], [0.0, 1.0]])
+
+        c = a.matmul(identity)
+
+        result = c.to_list()
+        assert result[0] == pytest.approx([1.0, 2.0])
+        assert result[1] == pytest.approx([3.0, 4.0])
+
+    def test_matmul_forward_batch_vector(self):
+        """Test matmul typical case: batch of vectors times weight matrix."""
+        # X: (batch=4, in=3) @ W: (in=3, out=2) -> (4, 2)
+        x = Tensor([
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+        ])  # (4, 3)
+        w = Tensor([
+            [1.0, 2.0],
+            [3.0, 4.0],
+            [5.0, 6.0],
+        ])  # (3, 2)
+
+        y = x.matmul(w)
+
+        assert y.shape == (4, 2)
+        # Row 0: [1,0,0] @ W = [1, 2]
+        # Row 1: [0,1,0] @ W = [3, 4]
+        # Row 2: [0,0,1] @ W = [5, 6]
+        # Row 3: [1,1,1] @ W = [1+3+5, 2+4+6] = [9, 12]
+        result = y.to_list()
+        assert result[0] == pytest.approx([1.0, 2.0])
+        assert result[1] == pytest.approx([3.0, 4.0])
+        assert result[2] == pytest.approx([5.0, 6.0])
+        assert result[3] == pytest.approx([9.0, 12.0])
+
+    def test_matmul_shape_validation_not_2d(self):
+        """Test that matmul rejects non-2D inputs."""
+        a = Tensor([1.0, 2.0, 3.0])  # 1D
+        b = Tensor([[1.0], [2.0], [3.0]])  # 2D
+
+        with pytest.raises(ValueError, match="2D"):
+            a.matmul(b)
+
+    def test_matmul_shape_validation_inner_mismatch(self):
+        """Test that matmul rejects incompatible inner dimensions."""
+        a = Tensor([[1.0, 2.0]])  # (1, 2)
+        b = Tensor([[1.0, 2.0, 3.0]])  # (1, 3) - inner dim mismatch
+
+        with pytest.raises(ValueError, match="mismatch"):
+            a.matmul(b)
+
+    def test_matmul_backward_a_only(self):
+        """Test matmul backward when only A requires grad."""
+        a = Tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)  # (2, 2)
+        b = Tensor([[1.0, 0.0], [0.0, 1.0]], requires_grad=False)  # identity
+
+        c = a.matmul(b)
+        loss = c.sum()
+
+        loss.backward()
+
+        # dC = ones(2,2)
+        # dA = dC @ B^T = ones @ I = ones
+        result = a.grad.to_list()
+        assert result[0] == pytest.approx([1.0, 1.0])
+        assert result[1] == pytest.approx([1.0, 1.0])
+        assert b.grad is None
+
+    def test_matmul_backward_b_only(self):
+        """Test matmul backward when only B requires grad."""
+        a = Tensor([[1.0, 0.0], [0.0, 1.0]], requires_grad=False)  # identity
+        b = Tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)  # (2, 2)
+
+        c = a.matmul(b)
+        loss = c.sum()
+
+        loss.backward()
+
+        # dC = ones(2,2)
+        # dB = A^T @ dC = I @ ones = ones
+        result = b.grad.to_list()
+        assert result[0] == pytest.approx([1.0, 1.0])
+        assert result[1] == pytest.approx([1.0, 1.0])
+        assert a.grad is None
+
+    def test_matmul_backward_both(self):
+        """Test matmul backward when both require grad."""
+        # A: (2, 3), B: (3, 2) -> C: (2, 2)
+        a = Tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], requires_grad=True)
+        b = Tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], requires_grad=True)
+
+        c = a.matmul(b)
+        loss = c.sum()
+
+        loss.backward()
+
+        # dC = ones(2, 2)
+        # dA = dC @ B^T: (2,2) @ (2,3) -> (2,3)
+        # B^T = [[1,3,5], [2,4,6]]
+        # dA = ones @ B^T = [[1+2, 3+4, 5+6], [1+2, 3+4, 5+6]] = [[3,7,11], [3,7,11]]
+        a_result = a.grad.to_list()
+        assert a_result[0] == pytest.approx([3.0, 7.0, 11.0])
+        assert a_result[1] == pytest.approx([3.0, 7.0, 11.0])
+
+        # dB = A^T @ dC: (3,2) @ (2,2) -> (3,2)
+        # A^T = [[1,4], [2,5], [3,6]]
+        # dB = A^T @ ones = [[1+4, 1+4], [2+5, 2+5], [3+6, 3+6]] = [[5,5], [7,7], [9,9]]
+        b_result = b.grad.to_list()
+        assert b_result[0] == pytest.approx([5.0, 5.0])
+        assert b_result[1] == pytest.approx([7.0, 7.0])
+        assert b_result[2] == pytest.approx([9.0, 9.0])
+
+    def test_matmul_no_grad(self):
+        """Test matmul with no gradient tracking."""
+        a = Tensor([[1.0, 2.0], [3.0, 4.0]])
+        b = Tensor([[1.0, 0.0], [0.0, 1.0]])
+
+        c = a.matmul(b)
+
+        assert c.requires_grad is False
+        assert c._backward is None
+
+
+@pytest.mark.requires_cuda
+@pytest.mark.requires_triton
+class TestMLPForwardBackward:
+    """Test full MLP forward and backward pass."""
+
+    def test_mlp_forward_backward(self):
+        """Test complete MLP: loss = sum(relu(X @ W + b))."""
+        # Input: (batch=2, in_features=3)
+        x = Tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], requires_grad=False)
+
+        # Weights: (in_features=3, out_features=2)
+        w = Tensor([[0.1, 0.2], [-0.1, 0.1], [0.0, -0.1]], requires_grad=True)
+
+        # Bias: (out_features=2)
+        b = Tensor([0.5, -0.5], requires_grad=True)
+
+        # Forward pass
+        # h = X @ W: (2,3) @ (3,2) -> (2,2)
+        h = x.matmul(w)
+
+        # y = h + b (broadcast)
+        y = h.add_bias(b)
+
+        # z = relu(y)
+        z = y.relu()
+
+        # loss = sum(z)
+        loss = z.sum()
+
+        # Should run without error
+        loss.backward()
+
+        # Check that gradients were computed
+        assert w.grad is not None
+        assert b.grad is not None
+        assert w.grad.shape == w.shape
+        assert b.grad.shape == b.shape

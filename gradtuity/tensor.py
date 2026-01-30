@@ -297,6 +297,181 @@ class Tensor:
     # Operations
     # -------------------------------------------------------------------------
 
+    def matmul(self, other: "Tensor") -> "Tensor":
+        """
+        Matrix multiplication: C = self @ other
+
+        Computes C[M, N] = A[M, K] @ B[K, N]
+        - self (A): shape (M, K) - e.g., (batch, in_features)
+        - other (B): shape (K, N) - e.g., (in_features, out_features)
+        - output (C): shape (M, N) - e.g., (batch, out_features)
+
+        Args:
+            other: Right-hand matrix, must be 2D with compatible dimensions.
+
+        Returns:
+            New tensor containing the matrix product.
+
+        Raises:
+            ValueError: If shapes are incompatible for matmul.
+        """
+        # Validate shapes
+        if self.ndim != 2:
+            raise ValueError(f"matmul requires 2D tensors, got self.shape={self._shape}")
+        if other.ndim != 2:
+            raise ValueError(
+                f"matmul requires 2D tensors, got other.shape={other._shape}"
+            )
+        if self._shape[1] != other._shape[0]:
+            raise ValueError(
+                f"matmul shape mismatch: {self._shape} @ {other._shape} "
+                f"(inner dimensions {self._shape[1]} vs {other._shape[0]})"
+            )
+
+        # Import here to avoid circular imports
+        import triton
+
+        from .cuda_mem import cuda_malloc
+        from .functional import zeros_like
+        from .kernels.elemwise_kernels import add_inplace_kernel
+        from .kernels.matmul_kernels import matmul_kernel, transpose2d_kernel
+
+        M, K = self._shape
+        K2, N = other._shape
+        out_shape = (M, N)
+        out_numel = M * N
+
+        # Allocate output
+        out_ptr = cuda_malloc(out_numel * 4)
+        out = Tensor._from_ptr(out_ptr, out_shape, owns_memory=True)
+
+        # Block sizes for matmul (tuned for typical small matrices)
+        BLOCK_M = 32
+        BLOCK_N = 32
+        BLOCK_K = 32
+
+        # Launch matmul kernel
+        grid = (triton.cdiv(M, BLOCK_M), triton.cdiv(N, BLOCK_N))
+        matmul_kernel[grid](
+            self._ptr,
+            other._ptr,
+            out._ptr,
+            M,
+            N,
+            K,
+            # Strides for row-major layout
+            K,
+            1,  # A strides: stride_am=K, stride_ak=1
+            N,
+            1,  # B strides: stride_bk=N, stride_bn=1
+            N,
+            1,  # C strides: stride_cm=N, stride_cn=1
+            BLOCK_M=BLOCK_M,
+            BLOCK_N=BLOCK_N,
+            BLOCK_K=BLOCK_K,
+        )
+
+        # Capture for backward
+        a_tensor = self
+        b_tensor = other
+
+        def _backward(out_grad: Tensor) -> None:
+            # dA = out_grad @ B^T  (M, N) @ (N, K) -> (M, K)
+            # dB = A^T @ out_grad  (K, M) @ (M, N) -> (K, N)
+
+            if a_tensor.requires_grad:
+                if a_tensor.grad is None:
+                    a_tensor.grad = zeros_like(a_tensor)
+
+                # Transpose B: (K, N) -> (N, K)
+                bt_ptr = cuda_malloc(b_tensor._numel * 4)
+                bt_numel = b_tensor._numel
+                grid_t = (triton.cdiv(bt_numel, 256),)
+                transpose2d_kernel[grid_t](
+                    b_tensor._ptr, bt_ptr, K, N, BLOCK=256
+                )
+
+                # Compute dA_contrib = out_grad @ B^T: (M, N) @ (N, K) -> (M, K)
+                da_ptr = cuda_malloc(a_tensor._numel * 4)
+                grid_da = (triton.cdiv(M, BLOCK_M), triton.cdiv(K, BLOCK_N))
+                matmul_kernel[grid_da](
+                    out_grad._ptr,
+                    bt_ptr,
+                    da_ptr,
+                    M,
+                    K,
+                    N,
+                    N,
+                    1,  # out_grad strides
+                    K,
+                    1,  # B^T strides (now shape N, K)
+                    K,
+                    1,  # dA strides
+                    BLOCK_M=BLOCK_M,
+                    BLOCK_N=BLOCK_N,
+                    BLOCK_K=BLOCK_K,
+                )
+
+                # Accumulate into A.grad
+                grid_acc = (triton.cdiv(a_tensor._numel, 256),)
+                add_inplace_kernel[grid_acc](
+                    a_tensor.grad._ptr, da_ptr, a_tensor._numel, BLOCK=256
+                )
+
+                # Free temporaries
+                from .cuda_mem import cuda_free
+
+                cuda_free(bt_ptr)
+                cuda_free(da_ptr)
+
+            if b_tensor.requires_grad:
+                if b_tensor.grad is None:
+                    b_tensor.grad = zeros_like(b_tensor)
+
+                # Transpose A: (M, K) -> (K, M)
+                at_ptr = cuda_malloc(a_tensor._numel * 4)
+                at_numel = a_tensor._numel
+                grid_t = (triton.cdiv(at_numel, 256),)
+                transpose2d_kernel[grid_t](
+                    a_tensor._ptr, at_ptr, M, K, BLOCK=256
+                )
+
+                # Compute dB_contrib = A^T @ out_grad: (K, M) @ (M, N) -> (K, N)
+                db_ptr = cuda_malloc(b_tensor._numel * 4)
+                grid_db = (triton.cdiv(K, BLOCK_M), triton.cdiv(N, BLOCK_N))
+                matmul_kernel[grid_db](
+                    at_ptr,
+                    out_grad._ptr,
+                    db_ptr,
+                    K,
+                    N,
+                    M,
+                    M,
+                    1,  # A^T strides (now shape K, M)
+                    N,
+                    1,  # out_grad strides
+                    N,
+                    1,  # dB strides
+                    BLOCK_M=BLOCK_M,
+                    BLOCK_N=BLOCK_N,
+                    BLOCK_K=BLOCK_K,
+                )
+
+                # Accumulate into B.grad
+                grid_acc = (triton.cdiv(b_tensor._numel, 256),)
+                add_inplace_kernel[grid_acc](
+                    b_tensor.grad._ptr, db_ptr, b_tensor._numel, BLOCK=256
+                )
+
+                # Free temporaries
+                from .cuda_mem import cuda_free
+
+                cuda_free(at_ptr)
+                cuda_free(db_ptr)
+
+        out._set_graph(parents=(self, other), backward_fn=_backward)
+        return out
+
     def add(self, other: "Tensor") -> "Tensor":
         """
         Elementwise addition: C = self + other
