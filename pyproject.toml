@@ -14,4 +14,7 @@ dependencies = [
 dev = [
     "ruff>=0.14.14",
     "pytest>=9.0.2",
+    "ipykernel>=7.1.0",
+    "scikit-learn>=1.8.0",
+    "matplotlib>=3.10.8",
 ]
