@@ -55,7 +55,7 @@ X_all = X_all / 255.0
 # Use a subset for faster training (full MNIST is 70K samples)
 # For demo purposes, use 10K train + 2K test
 X_train, X_test, y_train, y_test = train_test_split(
-    X_all, y_all, train_size=10000, test_size=2000, random_state=42, stratify=y_all
+    X_all, y_all, train_size=60000, test_size=10000, random_state=42, stratify=y_all
 )
 
 print(f"Loaded in {time.time() - start_time:.1f}s")
@@ -106,7 +106,6 @@ def create_one_hot(labels, num_classes=10):
 
     This encoding works well with MSE loss for classification.
     """
-    batch_size = len(labels)
     targets = []
     for label in labels:
         row = [-1.0] * num_classes
@@ -115,60 +114,65 @@ def create_one_hot(labels, num_classes=10):
     return targets
 
 
-def compute_loss_and_accuracy(X_batch_np, y_batch_np):
-    """
-    Compute MSE loss and accuracy for a batch.
+# -----------------------------------------------------------------------------
+# Pre-convert data to Tensors (avoids conversion overhead during training)
+# -----------------------------------------------------------------------------
+print("Pre-converting data to Tensors...")
+preconv_start = time.time()
 
-    Loss: MSE between model outputs and one-hot targets
-    Accuracy: Percentage of correct predictions (argmax of outputs)
-    """
-    batch_size = len(y_batch_np)
+# Pre-create training batches as Tensors
+num_train_batches = len(X_train) // BATCH_SIZE
+train_X_batches = []
+train_Y_batches = []
+train_Y_labels = []  # Keep numpy labels for accuracy calculation
 
-    # Convert to Gradtuity tensors
-    X_tensor = Tensor(X_batch_np.tolist())
-    y_onehot = Tensor(create_one_hot(y_batch_np))
+for i in range(num_train_batches):
+    start_idx = i * BATCH_SIZE
+    end_idx = start_idx + BATCH_SIZE
+    
+    X_batch_np = X_train[start_idx:end_idx]
+    y_batch_np = y_train[start_idx:end_idx]
+    
+    # Convert to Tensors
+    train_X_batches.append(Tensor(X_batch_np.tolist()))
+    train_Y_batches.append(Tensor(create_one_hot(y_batch_np)))
+    train_Y_labels.append(y_batch_np)
 
-    # Forward pass
-    scores = model(X_tensor)  # Shape: (batch, 10)
+# Pre-create test batches as Tensors
+TEST_BATCH_SIZE = 256
+num_test_batches = (len(X_test) + TEST_BATCH_SIZE - 1) // TEST_BATCH_SIZE
+test_X_batches = []
+test_Y_labels = []
 
-    # MSE Loss: ((scores - targets)^2).sum() / (batch_size * num_classes)
-    diff = scores - y_onehot
-    squared = diff * diff  # Elementwise square
-    loss = squared.sum() * (1.0 / (batch_size * 10))
+for i in range(num_test_batches):
+    start_idx = i * TEST_BATCH_SIZE
+    end_idx = min(start_idx + TEST_BATCH_SIZE, len(X_test))
+    
+    X_batch_np = X_test[start_idx:end_idx]
+    y_batch_np = y_test[start_idx:end_idx]
+    
+    test_X_batches.append(Tensor(X_batch_np.tolist()))
+    test_Y_labels.append(y_batch_np)
 
-    # Compute accuracy (on CPU using numpy)
-    scores_np = np.array(scores.to_list())
-    predictions = np.argmax(scores_np, axis=1)
-    accuracy = (predictions == y_batch_np).mean()
-
-    return loss, accuracy
+print(f"Pre-converted {num_train_batches} train batches + {num_test_batches} test batches in {time.time() - preconv_start:.1f}s")
+print()
 
 
-def evaluate(X_data, y_data, batch_size=256):
-    """Evaluate model on a dataset, returns average accuracy."""
-    num_samples = len(X_data)
-    num_batches = (num_samples + batch_size - 1) // batch_size
-
+def evaluate_preconverted():
+    """Evaluate model on pre-converted test data."""
     total_correct = 0
     total_samples = 0
 
-    for i in range(num_batches):
-        start_idx = i * batch_size
-        end_idx = min(start_idx + batch_size, num_samples)
-
-        X_batch = X_data[start_idx:end_idx]
-        y_batch = y_data[start_idx:end_idx]
-
-        # Forward pass
-        X_tensor = Tensor(X_batch.tolist())
+    for X_tensor, y_labels in zip(test_X_batches, test_Y_labels):
+        # Forward pass (no conversion needed!)
         scores = model(X_tensor)
 
-        # Compute predictions
-        scores_np = np.array(scores.to_list())
-        predictions = np.argmax(scores_np, axis=1)
+        # Compute predictions using GPU argmax
+        pred_indices = scores.argmax(dim=1)
+        predictions = np.array(pred_indices.to_list(), dtype=int)
 
-        total_correct += (predictions == y_batch).sum()
-        total_samples += len(y_batch)
+        total_correct += (predictions == y_labels).sum()
+        total_samples += len(y_labels)
 
     return total_correct / total_samples
 
@@ -179,20 +183,28 @@ def evaluate(X_data, y_data, batch_size=256):
 print("Training...")
 print("-" * 60)
 
-num_batches = len(X_train) // BATCH_SIZE
 train_losses = []
 train_accuracies = []
 test_accuracies = []
+
+# Timing accumulators
+TIMING_DEBUG = True
 
 start_time = time.time()
 
 for epoch in range(NUM_EPOCHS):
     epoch_start = time.time()
 
-    # Shuffle training data
-    indices = np.random.permutation(len(X_train))
-    X_train_shuffled = X_train[indices]
-    y_train_shuffled = y_train[indices]
+    # Reset timing accumulators for this epoch
+    time_forward = 0.0
+    time_loss_calc = 0.0
+    time_zero_grad = 0.0
+    time_backward = 0.0
+    time_sgd = 0.0
+    time_accuracy = 0.0
+
+    # Shuffle batch order (not individual samples, since data is pre-batched)
+    batch_indices = np.random.permutation(num_train_batches)
 
     # Learning rate decay
     lr = INITIAL_LR * (1.0 - 0.5 * epoch / NUM_EPOCHS)
@@ -200,32 +212,55 @@ for epoch in range(NUM_EPOCHS):
     epoch_loss = 0.0
     epoch_acc = 0.0
 
-    for batch_idx in range(num_batches):
-        # Get batch
-        start_idx = batch_idx * BATCH_SIZE
-        end_idx = start_idx + BATCH_SIZE
-        X_batch = X_train_shuffled[start_idx:end_idx]
-        y_batch = y_train_shuffled[start_idx:end_idx]
+    for batch_idx in batch_indices:
+        # Get pre-converted batch (no conversion needed!)
+        X_tensor = train_X_batches[batch_idx]
+        y_onehot = train_Y_batches[batch_idx]
+        y_labels = train_Y_labels[batch_idx]
 
-        # Forward + loss
-        loss, acc = compute_loss_and_accuracy(X_batch, y_batch)
+        # --- Forward pass ---
+        t0 = time.perf_counter()
+        scores = model(X_tensor)
+        time_forward += time.perf_counter() - t0
+
+        # --- Loss calculation (fused MSE) ---
+        t0 = time.perf_counter()
+        loss = scores.mse_loss(y_onehot)
+        time_loss_calc += time.perf_counter() - t0
 
         epoch_loss += loss.item()
+
+        # --- Accuracy calculation (GPU argmax) ---
+        t0 = time.perf_counter()
+        pred_indices = scores.argmax(dim=1)  # GPU argmax
+        predictions = np.array(pred_indices.to_list(), dtype=int)  # Only 64 values transferred
+        acc = (predictions == y_labels).mean()
         epoch_acc += acc
+        time_accuracy += time.perf_counter() - t0
 
-        # Backward
+        # --- Zero grad ---
+        t0 = time.perf_counter()
         model.zero_grad()
-        loss.backward()
+        time_zero_grad += time.perf_counter() - t0
 
-        # SGD update
+        # --- Backward pass ---
+        t0 = time.perf_counter()
+        loss.backward()
+        time_backward += time.perf_counter() - t0
+
+        # --- SGD update ---
+        t0 = time.perf_counter()
         sgd_step(model.parameters(), lr=lr)
+        time_sgd += time.perf_counter() - t0
 
     # Average metrics
-    avg_loss = epoch_loss / num_batches
-    avg_acc = epoch_acc / num_batches
+    avg_loss = epoch_loss / num_train_batches
+    avg_acc = epoch_acc / num_train_batches
 
-    # Evaluate on test set
-    test_acc = evaluate(X_test, y_test)
+    # --- Test evaluation timing ---
+    t0 = time.perf_counter()
+    test_acc = evaluate_preconverted()
+    time_eval = time.perf_counter() - t0
 
     train_losses.append(avg_loss)
     train_accuracies.append(avg_acc)
@@ -241,6 +276,16 @@ for epoch in range(NUM_EPOCHS):
         f"Time: {epoch_time:.1f}s"
     )
 
+    if TIMING_DEBUG:
+        total_train = time_forward + time_loss_calc + time_zero_grad + time_backward + time_sgd + time_accuracy
+        print(f"  Timing breakdown (train loop {total_train:.2f}s + eval {time_eval:.2f}s):")
+        print(f"    Forward:     {time_forward:6.3f}s ({100*time_forward/total_train:5.1f}%)")
+        print(f"    Loss calc:   {time_loss_calc:6.3f}s ({100*time_loss_calc/total_train:5.1f}%)")
+        print(f"    Accuracy:    {time_accuracy:6.3f}s ({100*time_accuracy/total_train:5.1f}%)")
+        print(f"    Zero grad:   {time_zero_grad:6.3f}s ({100*time_zero_grad/total_train:5.1f}%)")
+        print(f"    Backward:    {time_backward:6.3f}s ({100*time_backward/total_train:5.1f}%)")
+        print(f"    SGD update:  {time_sgd:6.3f}s ({100*time_sgd/total_train:5.1f}%)")
+
 total_time = time.time() - start_time
 print("-" * 60)
 print(f"Training complete in {total_time:.1f}s")
@@ -250,8 +295,23 @@ print()
 # Final Evaluation
 # -----------------------------------------------------------------------------
 print("Final Evaluation:")
-final_train_acc = evaluate(X_train, y_train)
-final_test_acc = evaluate(X_test, y_test)
+
+
+def evaluate_train_preconverted():
+    """Evaluate model on pre-converted training data."""
+    total_correct = 0
+    total_samples = 0
+    for X_tensor, y_labels in zip(train_X_batches, train_Y_labels):
+        scores = model(X_tensor)
+        pred_indices = scores.argmax(dim=1)
+        predictions = np.array(pred_indices.to_list(), dtype=int)
+        total_correct += (predictions == y_labels).sum()
+        total_samples += len(y_labels)
+    return total_correct / total_samples
+
+
+final_train_acc = evaluate_train_preconverted()
+final_test_acc = evaluate_preconverted()
 print(f"  Train Accuracy: {final_train_acc * 100:.2f}%")
 print(f"  Test Accuracy:  {final_test_acc * 100:.2f}%")
 print()
@@ -303,8 +363,8 @@ y_sample = y_test[:15]
 
 X_tensor = Tensor(X_sample.tolist())
 scores = model(X_tensor)
-scores_np = np.array(scores.to_list())
-predictions = np.argmax(scores_np, axis=1)
+pred_indices = scores.argmax(dim=1)
+predictions = np.array(pred_indices.to_list(), dtype=int)
 
 for i, ax in enumerate(axes.flat):
     ax.imshow(X_sample[i].reshape(28, 28), cmap="gray")
@@ -329,8 +389,8 @@ for digit in range(10):
 
         X_tensor = Tensor(X_digit.tolist())
         scores = model(X_tensor)
-        scores_np = np.array(scores.to_list())
-        preds = np.argmax(scores_np, axis=1)
+        pred_indices = scores.argmax(dim=1)
+        preds = np.array(pred_indices.to_list(), dtype=int)
 
         acc = (preds == y_digit).mean()
         print(f"  Digit {digit}: {acc * 100:.1f}% ({mask.sum()} samples)")

@@ -149,6 +149,13 @@ class TestTritonLikeFunctions:
         for val in flat:
             assert val == pytest.approx(fill_value)
 
+    def test_full_like_with_requires_grad(self):
+        """Test full_like with requires_grad=True."""
+        ref = Tensor([1.0, 2.0, 3.0])
+        t = full_like(ref, 5.0, requires_grad=True)
+        assert t.requires_grad is True
+        assert t.shape == ref.shape
+
 
 @pytest.mark.requires_cuda
 class TestRandn:
@@ -205,6 +212,18 @@ class TestRandn:
 
         assert abs(mean) < 0.2  # Mean should be close to 0
         assert 0.8 < std < 1.2  # Std should be close to 1
+
+    def test_randn_with_std_parameter(self):
+        """Test that randn std argument is applied correctly."""
+        t = randn((1000,), seed=42, std=0.5)
+        data = t.to_list()
+
+        mean = sum(data) / len(data)
+        variance = sum((x - mean) ** 2 for x in data) / len(data)
+        std = variance**0.5
+
+        assert abs(mean) < 0.2  # Mean should be close to 0
+        assert 0.35 < std < 0.65  # Std should be close to 0.5
 
     def test_randn_rejects_rank_3(self):
         """Test that randn rejects rank 3."""
@@ -301,6 +320,10 @@ class TestZeroGrad:
 
         assert p.grad is None
 
+    def test_zero_grad_empty_list(self):
+        """Test that zero_grad with empty list is safe (no-op)."""
+        zero_grad([])
+
 
 @pytest.mark.requires_cuda
 @pytest.mark.requires_triton
@@ -362,3 +385,7 @@ class TestSgdStep:
 
         # Value unchanged
         assert p.to_list() == pytest.approx([1.0, 2.0])
+
+    def test_sgd_step_empty_list(self):
+        """Test that sgd_step with empty list is safe (no-op)."""
+        sgd_step([], lr=0.1)

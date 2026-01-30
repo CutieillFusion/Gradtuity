@@ -45,17 +45,13 @@ class TestCudaMalloc:
         assert ptr > 0
         cuda_free(ptr)
 
-    def test_allocate_zero_bytes_raises_or_returns(self):
-        """Test that allocating 0 bytes either works or raises."""
-        # CUDA behavior for 0-byte allocation can vary
-        # It may return a valid pointer or raise an error
+    def test_allocate_zero_bytes(self):
+        """0-byte allocation may succeed or raise; we only verify no crash."""
         try:
             ptr = cuda_malloc(0)
-            # If it succeeds, clean up
             if ptr is not None:
                 cuda_free(ptr)
         except RuntimeError:
-            # This is acceptable behavior
             pass
 
 

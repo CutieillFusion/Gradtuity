@@ -98,7 +98,7 @@ class Linear(Module):
 
     def __call__(self, x: Tensor) -> Tensor:
         """
-        Forward pass: Y = X @ W + b
+        Forward pass: Y = X @ W + b (fused operation)
 
         Args:
             x: Input tensor of shape (batch, in_features).
@@ -106,16 +106,14 @@ class Linear(Module):
         Returns:
             Output tensor of shape (batch, out_features).
         """
-        return x.matmul(self.weight).add_bias(self.bias)
+        return x.linear(self.weight, self.bias)
 
     def parameters(self) -> list[Tensor]:
         """Return weight and bias tensors."""
         return [self.weight, self.bias]
 
     def __repr__(self) -> str:
-        return (
-            f"Linear(in_features={self.in_features}, out_features={self.out_features})"
-        )
+        return f"Linear(in_features={self.in_features}, out_features={self.out_features})"
 
 
 class MLP(Module):
@@ -145,13 +143,16 @@ class MLP(Module):
 
         # Build layers: nin -> nouts[0] -> nouts[1] -> ... -> nouts[-1]
         sizes = [nin] + nouts
-        self.layers = [Linear(sizes[i], sizes[i + 1]) for i in range(len(nouts))]
+        self.layers = [
+            Linear(sizes[i], sizes[i + 1]) for i in range(len(nouts))
+        ]
 
     def __call__(self, x: Tensor) -> Tensor:
         """
         Forward pass through all layers.
 
-        Applies ReLU activation after all layers except the last.
+        Uses fused linear+relu for hidden layers (more efficient).
+        The final layer has no activation (linear output).
 
         Args:
             x: Input tensor of shape (batch, nin).
@@ -160,10 +161,12 @@ class MLP(Module):
             Output tensor of shape (batch, nouts[-1]).
         """
         for i, layer in enumerate(self.layers):
-            x = layer(x)
-            # Apply ReLU to all but the last layer
             if i < len(self.layers) - 1:
-                x = x.relu()
+                # Hidden layer: fused linear + relu (1 kernel instead of 2)
+                x = x.linear_relu(layer.weight, layer.bias)
+            else:
+                # Output layer: linear only (no activation)
+                x = x.linear(layer.weight, layer.bias)
         return x
 
     def parameters(self) -> list[Tensor]:

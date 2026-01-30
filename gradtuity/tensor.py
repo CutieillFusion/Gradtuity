@@ -335,8 +335,11 @@ class Tensor:
 
         from .cuda_mem import cuda_malloc
         from .functional import zeros_like
-        from .kernels.elemwise_kernels import add_inplace_kernel
-        from .kernels.matmul_kernels import matmul_kernel, transpose2d_kernel
+        from .kernels.matmul_kernels import (
+            matmul_kernel,
+            matmul_nt_acc_kernel,
+            matmul_tn_acc_kernel,
+        )
 
         M, K = self._shape
         K2, N = other._shape
@@ -378,94 +381,65 @@ class Tensor:
         b_tensor = other
 
         def _backward(out_grad: Tensor) -> None:
-            # dA = out_grad @ B^T  (M, N) @ (N, K) -> (M, K)
-            # dB = A^T @ out_grad  (K, M) @ (M, N) -> (K, N)
+            # dA += out_grad @ B^T  (M, N) @ (N, K) -> (M, K)
+            # dB += A^T @ out_grad  (K, M) @ (M, N) -> (K, N)
+            #
+            # Using fused transposed matmul kernels that:
+            # 1. Read matrices in transposed order (no materialized transpose)
+            # 2. Accumulate directly into grad buffers (no temp + add_inplace)
 
             if a_tensor.requires_grad:
                 if a_tensor.grad is None:
                     a_tensor.grad = zeros_like(a_tensor)
 
-                # Transpose B: (K, N) -> (N, K)
-                bt_ptr = cuda_malloc(b_tensor._numel * 4)
-                bt_numel = b_tensor._numel
-                grid_t = (triton.cdiv(bt_numel, 256),)
-                transpose2d_kernel[grid_t](b_tensor._ptr, bt_ptr, K, N, BLOCK=256)
-
-                # Compute dA_contrib = out_grad @ B^T: (M, N) @ (N, K) -> (M, K)
-                da_ptr = cuda_malloc(a_tensor._numel * 4)
+                # dA += out_grad @ B^T using fused kernel
+                # out_grad: (M, N), B: (K, N) read as transposed -> result: (M, K)
+                # B is stored as (K, N) row-major: B[i,j] = b_ptr[i*N + j]
+                # We want B^T[k, n] = B[n, k] where n is row index, k is col index
+                # So stride_bn = N (row stride), stride_bk = 1 (col stride)
                 grid_da = (triton.cdiv(M, BLOCK_M), triton.cdiv(K, BLOCK_N))
-                matmul_kernel[grid_da](
+                matmul_nt_acc_kernel[grid_da](
                     out_grad._ptr,
-                    bt_ptr,
-                    da_ptr,
+                    b_tensor._ptr,
+                    a_tensor.grad._ptr,
                     M,
                     K,
+                    N,  # K_inner = N (shared dim)
                     N,
+                    1,  # out_grad strides (M, N): stride_am=N, stride_ak=1
                     N,
-                    1,  # out_grad strides
+                    1,  # B strides (K, N): stride_bn=N, stride_bk=1
                     K,
-                    1,  # B^T strides (now shape N, K)
-                    K,
-                    1,  # dA strides
+                    1,  # dA strides (M, K): stride_cm=K, stride_cn=1
                     BLOCK_M=BLOCK_M,
                     BLOCK_N=BLOCK_N,
                     BLOCK_K=BLOCK_K,
                 )
-
-                # Accumulate into A.grad
-                grid_acc = (triton.cdiv(a_tensor._numel, 256),)
-                add_inplace_kernel[grid_acc](
-                    a_tensor.grad._ptr, da_ptr, a_tensor._numel, BLOCK=256
-                )
-
-                # Free temporaries
-                from .cuda_mem import cuda_free
-
-                cuda_free(bt_ptr)
-                cuda_free(da_ptr)
 
             if b_tensor.requires_grad:
                 if b_tensor.grad is None:
                     b_tensor.grad = zeros_like(b_tensor)
 
-                # Transpose A: (M, K) -> (K, M)
-                at_ptr = cuda_malloc(a_tensor._numel * 4)
-                at_numel = a_tensor._numel
-                grid_t = (triton.cdiv(at_numel, 256),)
-                transpose2d_kernel[grid_t](a_tensor._ptr, at_ptr, M, K, BLOCK=256)
-
-                # Compute dB_contrib = A^T @ out_grad: (K, M) @ (M, N) -> (K, N)
-                db_ptr = cuda_malloc(b_tensor._numel * 4)
+                # dB += A^T @ out_grad using fused kernel
+                # A: (M, K) read as transposed, out_grad: (M, N) -> result: (K, N)
                 grid_db = (triton.cdiv(K, BLOCK_M), triton.cdiv(N, BLOCK_N))
-                matmul_kernel[grid_db](
-                    at_ptr,
+                matmul_tn_acc_kernel[grid_db](
+                    a_tensor._ptr,
                     out_grad._ptr,
-                    db_ptr,
+                    b_tensor.grad._ptr,
                     K,
                     N,
-                    M,
-                    M,
-                    1,  # A^T strides (now shape K, M)
+                    M,  # K_inner = M (shared dim)
+                    K,
+                    1,  # A strides (M, K): stride_ak=K, stride_am=1 (read transposed)
                     N,
-                    1,  # out_grad strides
+                    1,  # out_grad strides (M, N): stride_bk=N, stride_bn=1
                     N,
-                    1,  # dB strides
+                    1,  # dB strides (K, N): stride_cm=N, stride_cn=1
                     BLOCK_M=BLOCK_M,
                     BLOCK_N=BLOCK_N,
                     BLOCK_K=BLOCK_K,
                 )
-
-                # Accumulate into B.grad
-                grid_acc = (triton.cdiv(b_tensor._numel, 256),)
-                add_inplace_kernel[grid_acc](
-                    b_tensor.grad._ptr, db_ptr, b_tensor._numel, BLOCK=256
-                )
-
-                # Free temporaries
-                from .cuda_mem import cuda_free
-
-                cuda_free(at_ptr)
-                cuda_free(db_ptr)
 
         out._set_graph(parents=(self, other), backward_fn=_backward)
         return out
@@ -609,6 +583,465 @@ class Tensor:
                 )
 
         out._set_graph(parents=(self,), backward_fn=_backward)
+        return out
+
+    def mse_loss(self, target: "Tensor") -> "Tensor":
+        """
+        Compute mean squared error loss: L = mean((self - target)^2)
+
+        This is a fused operation that computes the MSE in a single kernel,
+        more efficient than separate subtract, square, and mean operations.
+
+        Args:
+            target: Target tensor, must have same shape as self.
+
+        Returns:
+            Scalar tensor containing the MSE loss.
+
+        Raises:
+            ValueError: If shapes don't match.
+        """
+        # Validate shapes match
+        if self._shape != target._shape:
+            raise ValueError(
+                f"Shape mismatch for mse_loss: {self._shape} vs {target._shape}"
+            )
+
+        # Import here to avoid circular imports
+        import triton
+
+        from .cuda_mem import cuda_malloc, cuda_memset
+        from .functional import zeros_like
+        from .kernels.reduce_kernels import mse_loss_backward_kernel, mse_loss_kernel
+
+        # Allocate zero-initialized output (MUST be zero for atomic adds)
+        out_ptr = cuda_malloc(4)  # 1 float32 = 4 bytes
+        cuda_memset(out_ptr, 0, 4)
+        out = Tensor._from_ptr(out_ptr, (1,), owns_memory=True)
+
+        # Launch forward kernel - computes sum((self - target)^2)
+        grid = lambda meta: (triton.cdiv(self._numel, meta["BLOCK"]),)
+        mse_loss_kernel[grid](self._ptr, target._ptr, out._ptr, self._numel, BLOCK=256)
+
+        # Scale by 1/numel to get mean (done via a scale operation)
+        # We'll do this in the backward by incorporating the scale factor
+        # For forward, we need to divide the result
+        from .kernels.elemwise_kernels import mul_scalar_kernel
+
+        scale = 1.0 / self._numel
+        mul_scalar_kernel[grid](out._ptr, scale, out._ptr, 1, BLOCK=256)
+
+        # Capture for backward
+        pred_tensor = self
+        target_tensor = target
+        numel = self._numel
+
+        def _backward(out_grad: Tensor) -> None:
+            # MSE gradient: d/dpred = 2 * (pred - target) / N
+            #               d/dtarget = -2 * (pred - target) / N
+            # out_grad is scalar (typically 1.0)
+
+            # Get the scalar gradient value
+            from .cuda_mem import cuda_memcpy_dtoh
+            import struct
+
+            grad_bytes = cuda_memcpy_dtoh(out_grad._ptr, 4)
+            grad_val = struct.unpack("f", grad_bytes)[0]
+            scale = grad_val / numel
+
+            # Allocate gradients if needed
+            if pred_tensor.requires_grad and pred_tensor.grad is None:
+                pred_tensor.grad = zeros_like(pred_tensor)
+            if target_tensor.requires_grad and target_tensor.grad is None:
+                target_tensor.grad = zeros_like(target_tensor)
+
+            # Use fused backward kernel
+            grid = lambda meta: (triton.cdiv(numel, meta["BLOCK"]),)
+            mse_loss_backward_kernel[grid](
+                pred_tensor.grad._ptr if pred_tensor.requires_grad else 0,
+                target_tensor.grad._ptr if target_tensor.requires_grad else 0,
+                pred_tensor._ptr,
+                target_tensor._ptr,
+                scale,
+                numel,
+                1 if pred_tensor.requires_grad else 0,
+                1 if target_tensor.requires_grad else 0,
+                BLOCK=256,
+            )
+
+        out._set_graph(parents=(self, target), backward_fn=_backward)
+        return out
+
+    def argmax(self, dim: int = 1) -> "Tensor":
+        """
+        Return indices of maximum values along a dimension.
+
+        Currently only supports dim=1 (argmax along rows) for 2D tensors.
+        This is a non-differentiable operation (no backward).
+
+        Args:
+            dim: Dimension to reduce (currently only dim=1 supported).
+
+        Returns:
+            1D tensor of indices (as float32 for GPU compatibility).
+
+        Raises:
+            ValueError: If tensor is not 2D or dim is not 1.
+        """
+        if self.ndim != 2:
+            raise ValueError(f"argmax requires 2D tensor, got shape {self._shape}")
+        if dim != 1:
+            raise ValueError(f"argmax currently only supports dim=1, got dim={dim}")
+
+        from .cuda_mem import cuda_malloc
+        from .kernels.reduce_kernels import argmax_axis1_kernel
+
+        rows, cols = self._shape
+
+        # Allocate output: one index per row
+        out_ptr = cuda_malloc(rows * 4)  # float32
+        out = Tensor._from_ptr(out_ptr, (rows,), owns_memory=True, requires_grad=False)
+
+        # Launch kernel - one program per row
+        # Use BLOCK_COLS that covers most column sizes efficiently
+        BLOCK_COLS = 64 if cols <= 64 else 256
+        argmax_axis1_kernel[(rows,)](
+            self._ptr, out._ptr, rows, cols, BLOCK_COLS=BLOCK_COLS
+        )
+
+        # No backward for argmax (non-differentiable)
+        return out
+
+    def linear(self, weight: "Tensor", bias: "Tensor") -> "Tensor":
+        """
+        Fused linear layer: Y = X @ W + b
+
+        This computes matrix multiplication and bias addition in a single kernel,
+        more efficient than separate matmul and add_bias operations.
+
+        Args:
+            weight: Weight matrix of shape (in_features, out_features).
+            bias: Bias vector of shape (out_features,).
+
+        Returns:
+            Output tensor of shape (batch, out_features).
+
+        Raises:
+            ValueError: If shapes are incompatible.
+        """
+        # Validate shapes
+        if self.ndim != 2:
+            raise ValueError(f"linear requires 2D input, got shape {self._shape}")
+        if weight.ndim != 2:
+            raise ValueError(f"weight must be 2D, got shape {weight._shape}")
+        if bias.ndim != 1:
+            raise ValueError(f"bias must be 1D, got shape {bias._shape}")
+        if self._shape[1] != weight._shape[0]:
+            raise ValueError(
+                f"linear shape mismatch: input {self._shape} @ weight {weight._shape}"
+            )
+        if weight._shape[1] != bias._shape[0]:
+            raise ValueError(
+                f"bias size {bias._shape[0]} doesn't match weight out_features {weight._shape[1]}"
+            )
+
+        # Import here to avoid circular imports
+        import triton
+
+        from .cuda_mem import cuda_malloc
+        from .functional import zeros_like
+        from .kernels.matmul_kernels import (
+            matmul_bias_kernel,
+            matmul_nt_acc_kernel,
+            matmul_tn_acc_kernel,
+        )
+        from .kernels.reduce_kernels import sum_axis0_kernel
+
+        M, K = self._shape
+        K2, N = weight._shape
+        out_shape = (M, N)
+        out_numel = M * N
+
+        # Allocate output
+        out_ptr = cuda_malloc(out_numel * 4)
+        out = Tensor._from_ptr(out_ptr, out_shape, owns_memory=True)
+
+        # Block sizes
+        BLOCK_M = 32
+        BLOCK_N = 32
+        BLOCK_K = 32
+
+        # Launch fused matmul+bias kernel
+        grid = (triton.cdiv(M, BLOCK_M), triton.cdiv(N, BLOCK_N))
+        matmul_bias_kernel[grid](
+            self._ptr,
+            weight._ptr,
+            bias._ptr,
+            out._ptr,
+            M,
+            N,
+            K,
+            K,
+            1,  # X strides (M, K)
+            N,
+            1,  # W strides (K, N)
+            N,
+            1,  # Y strides (M, N)
+            BLOCK_M=BLOCK_M,
+            BLOCK_N=BLOCK_N,
+            BLOCK_K=BLOCK_K,
+        )
+
+        # Capture for backward
+        x_tensor = self
+        w_tensor = weight
+        b_tensor = bias
+
+        def _backward(out_grad: Tensor) -> None:
+            # dX = out_grad @ W^T
+            # dW = X^T @ out_grad
+            # db = sum over axis 0 of out_grad
+
+            if x_tensor.requires_grad:
+                if x_tensor.grad is None:
+                    x_tensor.grad = zeros_like(x_tensor)
+                grid_dx = (triton.cdiv(M, BLOCK_M), triton.cdiv(K, BLOCK_N))
+                matmul_nt_acc_kernel[grid_dx](
+                    out_grad._ptr,
+                    w_tensor._ptr,
+                    x_tensor.grad._ptr,
+                    M,
+                    K,
+                    N,
+                    N,
+                    1,  # out_grad strides
+                    N,
+                    1,  # W strides
+                    K,
+                    1,  # dX strides
+                    BLOCK_M=BLOCK_M,
+                    BLOCK_N=BLOCK_N,
+                    BLOCK_K=BLOCK_K,
+                )
+
+            if w_tensor.requires_grad:
+                if w_tensor.grad is None:
+                    w_tensor.grad = zeros_like(w_tensor)
+                grid_dw = (triton.cdiv(K, BLOCK_M), triton.cdiv(N, BLOCK_N))
+                matmul_tn_acc_kernel[grid_dw](
+                    x_tensor._ptr,
+                    out_grad._ptr,
+                    w_tensor.grad._ptr,
+                    K,
+                    N,
+                    M,
+                    K,
+                    1,  # X strides
+                    N,
+                    1,  # out_grad strides
+                    N,
+                    1,  # dW strides
+                    BLOCK_M=BLOCK_M,
+                    BLOCK_N=BLOCK_N,
+                    BLOCK_K=BLOCK_K,
+                )
+
+            if b_tensor.requires_grad:
+                if b_tensor.grad is None:
+                    b_tensor.grad = zeros_like(b_tensor)
+                # db = sum over rows of out_grad
+                sum_axis0_kernel[(N,)](
+                    out_grad._ptr,
+                    b_tensor.grad._ptr,
+                    M,
+                    N,
+                    BLOCK_ROWS=32,
+                )
+
+        out._set_graph(parents=(self, weight, bias), backward_fn=_backward)
+        return out
+
+    def linear_relu(self, weight: "Tensor", bias: "Tensor") -> "Tensor":
+        """
+        Fused linear layer with ReLU: Y = relu(X @ W + b)
+
+        This computes matrix multiplication, bias addition, and ReLU in a single
+        kernel - more efficient than separate linear and relu operations.
+
+        Useful for hidden layers in neural networks.
+
+        Args:
+            weight: Weight matrix of shape (in_features, out_features).
+            bias: Bias vector of shape (out_features,).
+
+        Returns:
+            Output tensor of shape (batch, out_features) with ReLU applied.
+
+        Raises:
+            ValueError: If shapes are incompatible.
+        """
+        # Validate shapes
+        if self.ndim != 2:
+            raise ValueError(f"linear_relu requires 2D input, got shape {self._shape}")
+        if weight.ndim != 2:
+            raise ValueError(f"weight must be 2D, got shape {weight._shape}")
+        if bias.ndim != 1:
+            raise ValueError(f"bias must be 1D, got shape {bias._shape}")
+        if self._shape[1] != weight._shape[0]:
+            raise ValueError(
+                f"linear_relu shape mismatch: input {self._shape} @ weight {weight._shape}"
+            )
+        if weight._shape[1] != bias._shape[0]:
+            raise ValueError(
+                f"bias size {bias._shape[0]} doesn't match weight out_features {weight._shape[1]}"
+            )
+
+        # Import here to avoid circular imports
+        import triton
+
+        from .cuda_mem import cuda_malloc
+        from .functional import zeros_like
+        from .kernels.elemwise_kernels import relu_backward_kernel
+        from .kernels.matmul_kernels import (
+            matmul_bias_relu_kernel,
+            matmul_nt_acc_kernel,
+            matmul_tn_acc_kernel,
+        )
+        from .kernels.reduce_kernels import sum_axis0_kernel
+
+        M, K = self._shape
+        K2, N = weight._shape
+        out_shape = (M, N)
+        out_numel = M * N
+
+        # Allocate output
+        out_ptr = cuda_malloc(out_numel * 4)
+        out = Tensor._from_ptr(out_ptr, out_shape, owns_memory=True)
+
+        # Block sizes
+        BLOCK_M = 32
+        BLOCK_N = 32
+        BLOCK_K = 32
+
+        # Launch fused matmul+bias+relu kernel
+        grid = (triton.cdiv(M, BLOCK_M), triton.cdiv(N, BLOCK_N))
+        matmul_bias_relu_kernel[grid](
+            self._ptr,
+            weight._ptr,
+            bias._ptr,
+            out._ptr,
+            M,
+            N,
+            K,
+            K,
+            1,  # X strides (M, K)
+            N,
+            1,  # W strides (K, N)
+            N,
+            1,  # Y strides (M, N)
+            BLOCK_M=BLOCK_M,
+            BLOCK_N=BLOCK_N,
+            BLOCK_K=BLOCK_K,
+        )
+
+        # Capture for backward
+        x_tensor = self
+        w_tensor = weight
+        b_tensor = bias
+        out_tensor = out  # Need to keep reference for ReLU mask
+
+        def _backward(out_grad: Tensor) -> None:
+            # For Y = relu(X @ W + b):
+            # Let Z = X @ W + b (pre-activation)
+            # Y = relu(Z)
+            # dZ = dY * (Z > 0) = dY * (Y > 0) since Y = relu(Z)
+            # dX = dZ @ W^T
+            # dW = X^T @ dZ
+            # db = sum over axis 0 of dZ
+
+            # First compute dZ = out_grad * relu_mask
+            # We use Y > 0 as the mask since Y = relu(Z)
+            from .kernels.elemwise_kernels import mul_kernel
+
+            # Allocate dZ (gradient after ReLU mask)
+            dz_ptr = cuda_malloc(out_numel * 4)
+            dz = Tensor._from_ptr(dz_ptr, out_shape, owns_memory=True)
+
+            # dZ = out_grad * (Y > 0)
+            # We can use a kernel that does: dZ[i] = out_grad[i] if Y[i] > 0 else 0
+            from .kernels.elemwise_kernels import relu_mask_mul_kernel
+
+            grid_elem = lambda meta: (triton.cdiv(out_numel, meta["BLOCK"]),)
+            relu_mask_mul_kernel[grid_elem](
+                dz._ptr,
+                out_grad._ptr,
+                out_tensor._ptr,  # Y values for mask
+                out_numel,
+                BLOCK=256,
+            )
+
+            if x_tensor.requires_grad:
+                if x_tensor.grad is None:
+                    x_tensor.grad = zeros_like(x_tensor)
+                grid_dx = (triton.cdiv(M, BLOCK_M), triton.cdiv(K, BLOCK_N))
+                matmul_nt_acc_kernel[grid_dx](
+                    dz._ptr,
+                    w_tensor._ptr,
+                    x_tensor.grad._ptr,
+                    M,
+                    K,
+                    N,
+                    N,
+                    1,  # dZ strides
+                    N,
+                    1,  # W strides
+                    K,
+                    1,  # dX strides
+                    BLOCK_M=BLOCK_M,
+                    BLOCK_N=BLOCK_N,
+                    BLOCK_K=BLOCK_K,
+                )
+
+            if w_tensor.requires_grad:
+                if w_tensor.grad is None:
+                    w_tensor.grad = zeros_like(w_tensor)
+                grid_dw = (triton.cdiv(K, BLOCK_M), triton.cdiv(N, BLOCK_N))
+                matmul_tn_acc_kernel[grid_dw](
+                    x_tensor._ptr,
+                    dz._ptr,
+                    w_tensor.grad._ptr,
+                    K,
+                    N,
+                    M,
+                    K,
+                    1,  # X strides
+                    N,
+                    1,  # dZ strides
+                    N,
+                    1,  # dW strides
+                    BLOCK_M=BLOCK_M,
+                    BLOCK_N=BLOCK_N,
+                    BLOCK_K=BLOCK_K,
+                )
+
+            if b_tensor.requires_grad:
+                if b_tensor.grad is None:
+                    b_tensor.grad = zeros_like(b_tensor)
+                # db = sum over rows of dZ
+                sum_axis0_kernel[(N,)](
+                    dz._ptr,
+                    b_tensor.grad._ptr,
+                    M,
+                    N,
+                    BLOCK_ROWS=32,
+                )
+
+            # Free dZ
+            from .cuda_mem import cuda_free
+
+            cuda_free(dz_ptr)
+
+        out._set_graph(parents=(self, weight, bias), backward_fn=_backward)
         return out
 
     def add_bias(self, bias: "Tensor") -> "Tensor":

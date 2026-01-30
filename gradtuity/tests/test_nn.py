@@ -568,3 +568,483 @@ class TestIntegration:
 
         # Should complete without error
         assert len(losses) == 10
+
+
+# =============================================================================
+# Tests for Fused MSE Loss
+# =============================================================================
+
+
+@pytest.mark.requires_triton
+class TestMSELoss:
+    """Tests for fused MSE loss operation."""
+
+    def test_mse_loss_forward(self):
+        """Test mse_loss forward computation."""
+        a = Tensor([[1.0, 2.0], [3.0, 4.0]])
+        b = Tensor([[1.0, 1.0], [1.0, 1.0]])
+
+        loss = a.mse_loss(b)
+
+        # MSE = mean((a - b)^2) = mean([0, 1, 4, 9]) = 14/4 = 3.5
+        assert loss.shape == (1,)
+        assert loss.item() == pytest.approx(3.5)
+
+    def test_mse_loss_zero(self):
+        """Test mse_loss when inputs are equal."""
+        a = Tensor([[1.0, 2.0], [3.0, 4.0]])
+        b = Tensor([[1.0, 2.0], [3.0, 4.0]])
+
+        loss = a.mse_loss(b)
+
+        assert loss.item() == pytest.approx(0.0)
+
+    def test_mse_loss_1d(self):
+        """Test mse_loss on 1D tensors."""
+        a = Tensor([1.0, 2.0, 3.0])
+        b = Tensor([0.0, 0.0, 0.0])
+
+        loss = a.mse_loss(b)
+
+        # MSE = mean([1, 4, 9]) = 14/3
+        assert loss.item() == pytest.approx(14.0 / 3.0)
+
+    def test_mse_loss_backward_both(self):
+        """Test mse_loss backward when both inputs require grad."""
+        a = Tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
+        b = Tensor([[0.0, 0.0], [0.0, 0.0]], requires_grad=True)
+
+        loss = a.mse_loss(b)
+        loss.backward()
+
+        # dL/da = 2 * (a - b) / N = 2 * a / 4 = a / 2
+        # dL/db = -2 * (a - b) / N = -a / 2
+        expected_grad_a = [[0.5, 1.0], [1.5, 2.0]]
+        expected_grad_b = [[-0.5, -1.0], [-1.5, -2.0]]
+
+        a_grad = a.grad.to_list()
+        b_grad = b.grad.to_list()
+
+        assert a_grad[0] == pytest.approx(expected_grad_a[0])
+        assert a_grad[1] == pytest.approx(expected_grad_a[1])
+        assert b_grad[0] == pytest.approx(expected_grad_b[0])
+        assert b_grad[1] == pytest.approx(expected_grad_b[1])
+
+    def test_mse_loss_backward_pred_only(self):
+        """Test mse_loss backward when only predictions require grad."""
+        pred = Tensor([[2.0, 4.0]], requires_grad=True)
+        target = Tensor([[1.0, 1.0]], requires_grad=False)
+
+        loss = pred.mse_loss(target)
+        loss.backward()
+
+        # dL/dpred = 2 * (pred - target) / N = 2 * [1, 3] / 2 = [1, 3]
+        assert pred.grad.to_list()[0] == pytest.approx([1.0, 3.0])
+        assert target.grad is None
+
+    def test_mse_loss_shape_mismatch(self):
+        """Test mse_loss raises error for mismatched shapes."""
+        a = Tensor([1.0, 2.0, 3.0])
+        b = Tensor([1.0, 2.0])
+
+        with pytest.raises(ValueError, match="Shape mismatch"):
+            a.mse_loss(b)
+
+
+# =============================================================================
+# Tests for GPU Argmax
+# =============================================================================
+
+
+@pytest.mark.requires_triton
+class TestArgmax:
+    """Tests for GPU argmax operation."""
+
+    def test_argmax_basic(self):
+        """Test argmax on a simple 2D tensor."""
+        x = Tensor([[1.0, 3.0, 2.0], [5.0, 1.0, 4.0]])
+
+        indices = x.argmax(dim=1)
+
+        assert indices.shape == (2,)
+        result = indices.to_list()
+        assert int(result[0]) == 1  # max at index 1 (value 3.0)
+        assert int(result[1]) == 0  # max at index 0 (value 5.0)
+
+    def test_argmax_single_row(self):
+        """Test argmax on a single row."""
+        x = Tensor([[0.1, 0.9, 0.5, 0.3]])
+
+        indices = x.argmax(dim=1)
+
+        assert indices.shape == (1,)
+        assert int(indices.to_list()[0]) == 1  # max at index 1
+
+    def test_argmax_all_same(self):
+        """Test argmax when all values are the same (returns first)."""
+        x = Tensor([[1.0, 1.0, 1.0]])
+
+        indices = x.argmax(dim=1)
+
+        # Should return index 0 (first occurrence of max)
+        assert int(indices.to_list()[0]) == 0
+
+    def test_argmax_negative_values(self):
+        """Test argmax with negative values."""
+        x = Tensor([[-5.0, -1.0, -3.0], [-2.0, -4.0, -1.0]])
+
+        indices = x.argmax(dim=1)
+
+        result = indices.to_list()
+        assert int(result[0]) == 1  # -1.0 is max in first row
+        assert int(result[1]) == 2  # -1.0 is max in second row
+
+    def test_argmax_larger_tensor(self):
+        """Test argmax on a larger tensor (like MNIST scores)."""
+        # Simulate 4 samples with 10 classes (fixed seed for determinism)
+        import random
+
+        random.seed(42)
+        data = []
+        expected_indices = []
+        for i in range(4):
+            row = [random.random() for _ in range(10)]
+            max_idx = row.index(max(row))
+            expected_indices.append(max_idx)
+            data.append(row)
+
+        x = Tensor(data)
+        indices = x.argmax(dim=1)
+
+        result = indices.to_list()
+        for i in range(4):
+            assert int(result[i]) == expected_indices[i]
+
+    def test_argmax_requires_2d(self):
+        """Test argmax raises error for 1D tensor."""
+        x = Tensor([1.0, 2.0, 3.0])
+
+        with pytest.raises(ValueError, match="requires 2D"):
+            x.argmax(dim=1)
+
+    def test_argmax_only_dim1(self):
+        """Test argmax raises error for dim != 1."""
+        x = Tensor([[1.0, 2.0], [3.0, 4.0]])
+
+        with pytest.raises(ValueError, match="only supports dim=1"):
+            x.argmax(dim=0)
+
+    def test_argmax_no_grad(self):
+        """Test that argmax doesn't track gradients."""
+        x = Tensor([[1.0, 3.0, 2.0]], requires_grad=True)
+
+        indices = x.argmax(dim=1)
+
+        assert indices.requires_grad is False
+
+
+# =============================================================================
+# Tests for Fused Linear Layer
+# =============================================================================
+
+
+@pytest.mark.requires_triton
+class TestFusedLinear:
+    """Tests for fused linear (matmul + bias) operation."""
+
+    def test_linear_forward(self):
+        """Test linear forward: Y = X @ W + b"""
+        # X: (2, 3), W: (3, 2), b: (2,) -> Y: (2, 2)
+        x = Tensor([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+        w = Tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+        b = Tensor([0.1, 0.2])
+
+        y = x.linear(w, b)
+
+        assert y.shape == (2, 2)
+        result = y.to_list()
+        # Row 0: [1,0,0] @ W + b = [1, 2] + [0.1, 0.2] = [1.1, 2.2]
+        # Row 1: [0,1,0] @ W + b = [3, 4] + [0.1, 0.2] = [3.1, 4.2]
+        assert result[0] == pytest.approx([1.1, 2.2])
+        assert result[1] == pytest.approx([3.1, 4.2])
+
+    def test_linear_matches_separate_ops(self):
+        """Test that linear gives same result as matmul + add_bias."""
+        x = Tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+        w = Tensor([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]])
+        b = Tensor([1.0, 2.0, 3.0])
+
+        # Fused
+        y_fused = x.linear(w, b)
+
+        # Separate operations
+        y_separate = x.matmul(w).add_bias(b)
+
+        fused_result = y_fused.to_list()
+        separate_result = y_separate.to_list()
+
+        for i in range(3):
+            assert fused_result[i] == pytest.approx(separate_result[i], rel=1e-5)
+
+    def test_linear_backward_all(self):
+        """Test linear backward when all inputs require grad."""
+        x = Tensor([[1.0, 2.0]], requires_grad=True)
+        w = Tensor([[0.5, 1.0], [1.5, 2.0]], requires_grad=True)
+        b = Tensor([0.1, 0.2], requires_grad=True)
+
+        y = x.linear(w, b)
+        loss = y.sum()
+        loss.backward()
+
+        # Check gradients exist and have correct shapes
+        assert x.grad is not None
+        assert x.grad.shape == (1, 2)
+
+        assert w.grad is not None
+        assert w.grad.shape == (2, 2)
+
+        assert b.grad is not None
+        assert b.grad.shape == (2,)
+
+        # db should be sum of out_grad over rows = [1, 1]
+        assert b.grad.to_list() == pytest.approx([1.0, 1.0])
+
+    def test_linear_backward_x_only(self):
+        """Test linear backward when only input requires grad."""
+        x = Tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
+        w = Tensor([[1.0, 0.0], [0.0, 1.0]], requires_grad=False)
+        b = Tensor([0.0, 0.0], requires_grad=False)
+
+        y = x.linear(w, b)
+        loss = y.sum()
+        loss.backward()
+
+        # dX = out_grad @ W^T = [[1,1], [1,1]] @ I = [[1,1], [1,1]]
+        x_grad = x.grad.to_list()
+        assert x_grad[0] == pytest.approx([1.0, 1.0])
+        assert x_grad[1] == pytest.approx([1.0, 1.0])
+
+        assert w.grad is None
+        assert b.grad is None
+
+    def test_linear_backward_accumulates(self):
+        """Test that linear backward accumulates gradients."""
+        x = Tensor([[1.0, 1.0]], requires_grad=True)
+        w = Tensor([[1.0, 1.0], [1.0, 1.0]], requires_grad=True)
+        b = Tensor([0.0, 0.0], requires_grad=True)
+
+        # Pre-set gradients
+        from gradtuity import ones
+
+        x.grad = ones((1, 2))
+        w.grad = ones((2, 2))
+        b.grad = ones((2,))
+
+        y = x.linear(w, b)
+        loss = y.sum()
+        loss.backward()
+
+        # Gradients should be accumulated (original + new)
+        # Original x.grad = [[1, 1]], new contribution adds to it
+        x_grad = x.grad.to_list()
+        assert x_grad[0][0] > 1.0  # Should be > 1 due to accumulation
+        assert x_grad[0][1] > 1.0
+
+    def test_linear_shape_validation(self):
+        """Test linear raises errors for invalid shapes."""
+        x = Tensor([[1.0, 2.0]])
+        w = Tensor([[1.0], [2.0], [3.0]])  # Wrong shape
+        b = Tensor([1.0])
+
+        with pytest.raises(ValueError, match="shape mismatch"):
+            x.linear(w, b)
+
+    def test_linear_bias_size_validation(self):
+        """Test linear raises error when bias size doesn't match."""
+        x = Tensor([[1.0, 2.0]])
+        w = Tensor([[1.0, 2.0], [3.0, 4.0]])
+        b = Tensor([1.0, 2.0, 3.0])  # Wrong size
+
+        with pytest.raises(ValueError, match="bias size"):
+            x.linear(w, b)
+
+
+# =============================================================================
+# Tests for Fused Linear+ReLU
+# =============================================================================
+
+
+@pytest.mark.requires_triton
+class TestLinearRelu:
+    """Tests for fused linear+relu operation."""
+
+    def test_linear_relu_forward(self):
+        """Test linear_relu forward: Y = relu(X @ W + b)"""
+        # X: (2, 2), W: (2, 2), b: (2,) -> Y: (2, 2)
+        x = Tensor([[1.0, 0.0], [0.0, 1.0]])
+        w = Tensor([[1.0, -1.0], [2.0, -2.0]])
+        b = Tensor([0.5, 0.5])
+
+        y = x.linear_relu(w, b)
+
+        assert y.shape == (2, 2)
+        result = y.to_list()
+        # Row 0: relu([1,0] @ W + b) = relu([1, -1] + [0.5, 0.5]) = relu([1.5, -0.5]) = [1.5, 0]
+        # Row 1: relu([0,1] @ W + b) = relu([2, -2] + [0.5, 0.5]) = relu([2.5, -1.5]) = [2.5, 0]
+        assert result[0] == pytest.approx([1.5, 0.0])
+        assert result[1] == pytest.approx([2.5, 0.0])
+
+    def test_linear_relu_matches_separate_ops(self):
+        """Test that linear_relu gives same result as linear + relu."""
+        x = Tensor([[1.0, 2.0], [3.0, 4.0], [-1.0, -2.0]])
+        w = Tensor([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]])
+        b = Tensor([-0.5, 0.0, 0.5])
+
+        # Fused
+        y_fused = x.linear_relu(w, b)
+
+        # Separate operations
+        y_separate = x.linear(w, b).relu()
+
+        fused_result = y_fused.to_list()
+        separate_result = y_separate.to_list()
+
+        for i in range(3):
+            assert fused_result[i] == pytest.approx(separate_result[i], rel=1e-5)
+
+    def test_linear_relu_all_positive(self):
+        """Test linear_relu when all pre-activation values are positive."""
+        x = Tensor([[1.0, 1.0]])
+        w = Tensor([[1.0, 1.0], [1.0, 1.0]])
+        b = Tensor([1.0, 1.0])
+
+        y = x.linear_relu(w, b)
+
+        # [1,1] @ W + b = [2, 2] + [1, 1] = [3, 3], all positive
+        assert y.to_list()[0] == pytest.approx([3.0, 3.0])
+
+    def test_linear_relu_all_negative(self):
+        """Test linear_relu when all pre-activation values are negative."""
+        x = Tensor([[1.0, 1.0]])
+        w = Tensor([[-1.0, -1.0], [-1.0, -1.0]])
+        b = Tensor([-1.0, -1.0])
+
+        y = x.linear_relu(w, b)
+
+        # [1,1] @ W + b = [-2, -2] + [-1, -1] = [-3, -3], all negative -> [0, 0]
+        assert y.to_list()[0] == pytest.approx([0.0, 0.0])
+
+    def test_linear_relu_backward_all(self):
+        """Test linear_relu backward when all inputs require grad."""
+        x = Tensor([[1.0, 2.0]], requires_grad=True)
+        w = Tensor([[0.5, -0.5], [1.0, -1.0]], requires_grad=True)
+        b = Tensor([0.1, 0.1], requires_grad=True)
+
+        y = x.linear_relu(w, b)
+        loss = y.sum()
+        loss.backward()
+
+        # Check gradients exist and have correct shapes
+        assert x.grad is not None
+        assert x.grad.shape == (1, 2)
+
+        assert w.grad is not None
+        assert w.grad.shape == (2, 2)
+
+        assert b.grad is not None
+        assert b.grad.shape == (2,)
+
+    def test_linear_relu_backward_matches_separate(self):
+        """Test linear_relu backward matches separate linear + relu backward."""
+        # Use same initialization for both
+        x1 = Tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
+        w1 = Tensor([[0.5, 0.2], [0.3, 0.4]], requires_grad=True)
+        b1 = Tensor([0.1, -0.1], requires_grad=True)
+
+        x2 = Tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
+        w2 = Tensor([[0.5, 0.2], [0.3, 0.4]], requires_grad=True)
+        b2 = Tensor([0.1, -0.1], requires_grad=True)
+
+        # Fused path
+        y1 = x1.linear_relu(w1, b1)
+        loss1 = y1.sum()
+        loss1.backward()
+
+        # Separate path
+        y2 = x2.linear(w2, b2).relu()
+        loss2 = y2.sum()
+        loss2.backward()
+
+        # Compare gradients
+        assert x1.grad.to_list()[0] == pytest.approx(x2.grad.to_list()[0], rel=1e-5)
+        assert x1.grad.to_list()[1] == pytest.approx(x2.grad.to_list()[1], rel=1e-5)
+
+        assert w1.grad.to_list()[0] == pytest.approx(w2.grad.to_list()[0], rel=1e-5)
+        assert w1.grad.to_list()[1] == pytest.approx(w2.grad.to_list()[1], rel=1e-5)
+
+        assert b1.grad.to_list() == pytest.approx(b2.grad.to_list(), rel=1e-5)
+
+    def test_linear_relu_backward_x_only(self):
+        """Test linear_relu backward when only input requires grad."""
+        x = Tensor([[1.0, 2.0]], requires_grad=True)
+        w = Tensor([[1.0, 0.0], [0.0, 1.0]], requires_grad=False)
+        b = Tensor([0.0, -10.0], requires_grad=False)  # Second output will be zeroed by relu
+
+        y = x.linear_relu(w, b)
+        # y = relu([1,2] @ I + [0,-10]) = relu([1, -8]) = [1, 0]
+        loss = y.sum()
+        loss.backward()
+
+        # dY = [1, 1], but relu mask is [1, 0] since y = [1, 0]
+        # dZ = [1, 0]
+        # dX = dZ @ W^T = [1, 0] @ I = [1, 0]
+        x_grad = x.grad.to_list()[0]
+        assert x_grad == pytest.approx([1.0, 0.0])
+
+        assert w.grad is None
+        assert b.grad is None
+
+    def test_linear_relu_backward_relu_blocks_gradient(self):
+        """Test that relu mask correctly blocks gradients for negative pre-activations."""
+        x = Tensor([[1.0]], requires_grad=True)
+        w = Tensor([[-1.0, 1.0]], requires_grad=True)  # One negative, one positive output
+        b = Tensor([0.0, 0.0], requires_grad=True)
+
+        y = x.linear_relu(w, b)
+        # y = relu([[-1, 1]]) = [0, 1]
+        loss = y.sum()
+        loss.backward()
+
+        # dY = [1, 1], relu mask = [0, 1] (since y = [0, 1])
+        # dZ = [0, 1]
+        # dW = X^T @ dZ = [[1]] @ [[0, 1]] = [[0, 1]]
+        w_grad = w.grad.to_list()
+        assert w_grad[0] == pytest.approx([0.0, 1.0])
+
+        # db = sum(dZ, axis=0) = [0, 1]
+        assert b.grad.to_list() == pytest.approx([0.0, 1.0])
+
+    def test_linear_relu_shape_validation(self):
+        """Test linear_relu raises errors for invalid shapes."""
+        x = Tensor([[1.0, 2.0]])
+        w = Tensor([[1.0], [2.0], [3.0]])  # Wrong shape
+        b = Tensor([1.0])
+
+        with pytest.raises(ValueError, match="shape mismatch"):
+            x.linear_relu(w, b)
+
+    def test_linear_relu_in_mlp(self):
+        """Test that MLP correctly uses linear_relu for hidden layers."""
+        model = MLP(2, [4, 4, 1])
+
+        x = Tensor([[1.0, 2.0], [3.0, 4.0]])
+        y = model(x)
+
+        assert y.shape == (2, 1)
+
+        # Test backward works
+        y.sum().backward()
+
+        # All parameters should have gradients
+        for p in model.parameters():
+            assert p.grad is not None

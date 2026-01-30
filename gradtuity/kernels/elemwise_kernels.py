@@ -5,6 +5,7 @@ Includes:
 - add_kernel: Elementwise addition (C = A + B)
 - relu_kernel: ReLU forward (Z = max(Y, 0))
 - relu_backward_kernel: ReLU backward with accumulation (dY += dZ * (Y > 0))
+- relu_mask_mul_kernel: Multiply by ReLU mask (C = A * (Y > 0))
 - add_inplace_kernel: In-place addition for gradient accumulation (A += B)
 - mul_kernel: Elementwise multiplication (C = A * B)
 - mul_scalar_kernel: Scalar multiplication (C = A * scalar)
@@ -107,6 +108,44 @@ def relu_backward_kernel(
     dy = dy + dz * relu_mask
 
     tl.store(dy_ptr + offsets, dy, mask=mask)
+
+
+@triton.jit
+def relu_mask_mul_kernel(
+    c_ptr: tl.pointer_type(tl.float32),
+    a_ptr: tl.pointer_type(tl.float32),
+    y_ptr: tl.pointer_type(tl.float32),
+    numel: tl.int32,
+    BLOCK: tl.constexpr,
+):
+    """
+    Multiply by ReLU mask (non-accumulating): C = A * (Y > 0)
+
+    Used for computing gradients through fused linear+relu operations.
+    Unlike relu_backward_kernel, this writes directly (no accumulation).
+
+    Args:
+        c_ptr: Output tensor GPU pointer (float32*).
+        a_ptr: Input tensor to be masked (float32*).
+        y_ptr: ReLU output for mask computation (float32*).
+        numel: Total number of elements.
+        BLOCK: Block size (compile-time constant).
+    """
+    pid = tl.program_id(0)
+    offsets = pid * BLOCK + tl.arange(0, BLOCK)
+    mask = offsets < numel
+
+    # Load values
+    a = tl.load(a_ptr + offsets, mask=mask, other=0.0)
+    y = tl.load(y_ptr + offsets, mask=mask, other=0.0)
+
+    # Compute relu mask: 1.0 where Y > 0, else 0.0
+    relu_mask = (y > 0.0).to(tl.float32)
+
+    # C = A * mask
+    c = a * relu_mask
+
+    tl.store(c_ptr + offsets, c, mask=mask)
 
 
 @triton.jit
