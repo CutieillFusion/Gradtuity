@@ -398,6 +398,122 @@ class Tensor:
         out._set_graph(parents=(self,), backward_fn=_backward)
         return out
 
+    def sum(self) -> "Tensor":
+        """
+        Sum all elements to produce a scalar tensor.
+
+        Returns:
+            Scalar tensor with shape (1,) containing the sum of all elements.
+        """
+        # Import here to avoid circular imports
+        import triton
+
+        from .cuda_mem import cuda_malloc, cuda_memset
+        from .functional import zeros_like
+        from .kernels.reduce_kernels import add_scalar_inplace_kernel, sum_all_kernel
+
+        # Allocate zero-initialized output (MUST be zero for atomic adds)
+        out_ptr = cuda_malloc(4)  # 1 float32 = 4 bytes
+        cuda_memset(out_ptr, 0, 4)
+        out = Tensor._from_ptr(out_ptr, (1,), owns_memory=True)
+
+        # Launch forward kernel
+        grid = lambda meta: (triton.cdiv(self._numel, meta["BLOCK"]),)
+        sum_all_kernel[grid](self._ptr, out._ptr, self._numel, BLOCK=256)
+
+        # Capture self for backward
+        input_tensor = self
+
+        def _backward(out_grad: Tensor) -> None:
+            # dX += broadcast(out_grad) = add scalar to all elements
+            if input_tensor.requires_grad:
+                if input_tensor.grad is None:
+                    input_tensor.grad = zeros_like(input_tensor)
+                grid = lambda meta: (triton.cdiv(input_tensor._numel, meta["BLOCK"]),)
+                add_scalar_inplace_kernel[grid](
+                    input_tensor.grad._ptr,
+                    out_grad._ptr,  # Scalar gradient
+                    input_tensor._numel,
+                    BLOCK=256,
+                )
+
+        out._set_graph(parents=(self,), backward_fn=_backward)
+        return out
+
+    def add_bias(self, bias: "Tensor") -> "Tensor":
+        """
+        Add a 1D bias to a 2D tensor with broadcasting.
+
+        Y[i, j] = self[i, j] + bias[j]
+
+        Args:
+            bias: 1D tensor of shape (H,) where self has shape (B, H).
+
+        Returns:
+            New tensor of same shape as self.
+
+        Raises:
+            ValueError: If shapes are incompatible.
+        """
+        # Validate shapes
+        if self.ndim != 2:
+            raise ValueError(f"add_bias requires 2D input, got shape {self._shape}")
+        if bias.ndim != 1:
+            raise ValueError(f"bias must be 1D, got shape {bias._shape}")
+        if self._shape[1] != bias._shape[0]:
+            raise ValueError(
+                f"Bias size {bias._shape[0]} doesn't match input features {self._shape[1]}"
+            )
+
+        # Import here to avoid circular imports
+        import triton
+
+        from .cuda_mem import cuda_malloc
+        from .functional import zeros_like
+        from .kernels.elemwise_kernels import add_inplace_kernel
+        from .kernels.reduce_kernels import add_bias_kernel, sum_axis0_kernel
+
+        rows, cols = self._shape
+
+        # Allocate output
+        out_ptr = cuda_malloc(self._nbytes)
+        out = Tensor._from_ptr(out_ptr, self._shape, owns_memory=True)
+
+        # Launch forward kernel
+        grid = lambda meta: (triton.cdiv(self._numel, meta["BLOCK"]),)
+        add_bias_kernel[grid](self._ptr, bias._ptr, out._ptr, rows, cols, BLOCK=256)
+
+        # Capture for backward
+        input_tensor = self
+        bias_tensor = bias
+
+        def _backward(out_grad: Tensor) -> None:
+            # dX += out_grad (elementwise)
+            if input_tensor.requires_grad:
+                if input_tensor.grad is None:
+                    input_tensor.grad = zeros_like(input_tensor)
+                grid = lambda meta: (triton.cdiv(input_tensor._numel, meta["BLOCK"]),)
+                add_inplace_kernel[grid](
+                    input_tensor.grad._ptr, out_grad._ptr, input_tensor._numel, BLOCK=256
+                )
+
+            # db += sum over axis 0 of out_grad
+            if bias_tensor.requires_grad:
+                if bias_tensor.grad is None:
+                    bias_tensor.grad = zeros_like(bias_tensor)
+                # Each column gets summed independently
+                # Grid size = number of columns
+                sum_axis0_kernel[(cols,)](
+                    out_grad._ptr,
+                    bias_tensor.grad._ptr,
+                    rows,
+                    cols,
+                    BLOCK_ROWS=32,
+                )
+
+        out._set_graph(parents=(self, bias), backward_fn=_backward)
+        return out
+
     def to_list(self) -> list:
         """
         Copy data from GPU to CPU and return as nested Python list.

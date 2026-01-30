@@ -825,3 +825,271 @@ class TestAddReluIntegration:
 
         # x appears twice, so grad = 1 + 1 = 2
         assert x.grad.to_list() == pytest.approx([2.0, 2.0, 2.0])
+
+
+@pytest.mark.requires_cuda
+@pytest.mark.requires_triton
+class TestSum:
+    """Tests for sum() reduction operation."""
+
+    def test_sum_1d(self):
+        """Test sum on 1D tensor."""
+        x = Tensor([1.0, 2.0, 3.0, 4.0])
+        loss = x.sum()
+
+        assert loss.shape == (1,)
+        assert loss.item() == pytest.approx(10.0)
+
+    def test_sum_2d(self):
+        """Test sum on 2D tensor."""
+        x = Tensor([[1.0, 2.0], [3.0, 4.0]])
+        loss = x.sum()
+
+        assert loss.shape == (1,)
+        assert loss.item() == pytest.approx(10.0)
+
+    def test_sum_large(self):
+        """Test sum on larger tensor for correctness."""
+        # 100 elements, each 1.0
+        data = [1.0] * 100
+        x = Tensor(data, shape=(100,))
+        loss = x.sum()
+
+        assert loss.item() == pytest.approx(100.0)
+
+    def test_sum_negative_values(self):
+        """Test sum with negative values."""
+        x = Tensor([-1.0, 2.0, -3.0, 4.0])
+        loss = x.sum()
+
+        assert loss.item() == pytest.approx(2.0)
+
+    def test_sum_backward(self):
+        """Test sum backward broadcasts scalar gradient."""
+        x = Tensor([1.0, 2.0, 3.0], requires_grad=True)
+        loss = x.sum()
+
+        assert loss.requires_grad is True
+
+        # Backward
+        loss.backward()
+
+        # Gradient should be all ones (dloss/dx_i = 1 for sum)
+        assert x.grad is not None
+        assert x.grad.to_list() == pytest.approx([1.0, 1.0, 1.0])
+
+    def test_sum_backward_2d(self):
+        """Test sum backward on 2D tensor."""
+        x = Tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
+        loss = x.sum()
+
+        loss.backward()
+
+        # All gradients should be 1.0
+        result = x.grad.to_list()
+        assert result[0] == pytest.approx([1.0, 1.0])
+        assert result[1] == pytest.approx([1.0, 1.0])
+
+    def test_sum_no_grad(self):
+        """Test sum with no gradient tracking."""
+        x = Tensor([1.0, 2.0, 3.0])
+        loss = x.sum()
+
+        assert loss.requires_grad is False
+        assert loss._backward is None
+
+
+@pytest.mark.requires_cuda
+@pytest.mark.requires_triton
+class TestAddBias:
+    """Tests for add_bias() operation."""
+
+    def test_add_bias_forward(self):
+        """Test add_bias forward computation."""
+        x = Tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])  # (2, 3)
+        b = Tensor([0.1, 0.2, 0.3])  # (3,)
+
+        y = x.add_bias(b)
+
+        assert y.shape == (2, 3)
+        result = y.to_list()
+        assert result[0] == pytest.approx([1.1, 2.2, 3.3])
+        assert result[1] == pytest.approx([4.1, 5.2, 6.3])
+
+    def test_add_bias_shape_validation_input_not_2d(self):
+        """Test that add_bias rejects non-2D input."""
+        x = Tensor([1.0, 2.0, 3.0])  # 1D
+        b = Tensor([0.1, 0.2, 0.3])
+
+        with pytest.raises(ValueError, match="2D"):
+            x.add_bias(b)
+
+    def test_add_bias_shape_validation_bias_not_1d(self):
+        """Test that add_bias rejects non-1D bias."""
+        x = Tensor([[1.0, 2.0], [3.0, 4.0]])
+        b = Tensor([[0.1, 0.2]])  # 2D instead of 1D
+
+        with pytest.raises(ValueError, match="1D"):
+            x.add_bias(b)
+
+    def test_add_bias_shape_validation_size_mismatch(self):
+        """Test that add_bias rejects mismatched sizes."""
+        x = Tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])  # (2, 3)
+        b = Tensor([0.1, 0.2])  # (2,) - wrong size
+
+        with pytest.raises(ValueError, match="doesn't match"):
+            x.add_bias(b)
+
+    def test_add_bias_backward_x_grad(self):
+        """Test add_bias backward for input gradient."""
+        x = Tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
+        b = Tensor([0.1, 0.2], requires_grad=False)
+
+        y = x.add_bias(b)
+
+        from gradtuity.functional import ones_like
+
+        y.grad = ones_like(y)
+        y._backward(y.grad)
+
+        # dX = dY (elementwise)
+        result = x.grad.to_list()
+        assert result[0] == pytest.approx([1.0, 1.0])
+        assert result[1] == pytest.approx([1.0, 1.0])
+
+    def test_add_bias_backward_bias_grad(self):
+        """Test add_bias backward for bias gradient (sum over axis 0)."""
+        x = Tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=False)
+        b = Tensor([0.1, 0.2], requires_grad=True)
+
+        y = x.add_bias(b)
+
+        from gradtuity.functional import ones_like
+
+        y.grad = ones_like(y)
+        y._backward(y.grad)
+
+        # db = sum over rows of dY = [1+1, 1+1] = [2, 2]
+        assert b.grad is not None
+        assert b.grad.to_list() == pytest.approx([2.0, 2.0])
+
+    def test_add_bias_backward_both_grads(self):
+        """Test add_bias backward when both require grad."""
+        x = Tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], requires_grad=True)  # (2, 3)
+        b = Tensor([0.1, 0.2, 0.3], requires_grad=True)  # (3,)
+
+        y = x.add_bias(b)
+
+        from gradtuity.functional import ones_like
+
+        y.grad = ones_like(y)
+        y._backward(y.grad)
+
+        # dX = dY (all ones)
+        x_result = x.grad.to_list()
+        assert x_result[0] == pytest.approx([1.0, 1.0, 1.0])
+        assert x_result[1] == pytest.approx([1.0, 1.0, 1.0])
+
+        # db = sum over batch = [2, 2, 2]
+        assert b.grad.to_list() == pytest.approx([2.0, 2.0, 2.0])
+
+    def test_add_bias_backward_non_unit_grad(self):
+        """Test add_bias backward with non-unit output gradient."""
+        x = Tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
+        b = Tensor([0.1, 0.2], requires_grad=True)
+
+        y = x.add_bias(b)
+
+        # Non-unit gradient
+        y.grad = Tensor([[1.0, 2.0], [3.0, 4.0]])
+        y._backward(y.grad)
+
+        # dX = dY
+        x_result = x.grad.to_list()
+        assert x_result[0] == pytest.approx([1.0, 2.0])
+        assert x_result[1] == pytest.approx([3.0, 4.0])
+
+        # db = sum over rows = [1+3, 2+4] = [4, 6]
+        assert b.grad.to_list() == pytest.approx([4.0, 6.0])
+
+    def test_add_bias_no_grad(self):
+        """Test add_bias with no gradient tracking."""
+        x = Tensor([[1.0, 2.0], [3.0, 4.0]])
+        b = Tensor([0.1, 0.2])
+
+        y = x.add_bias(b)
+
+        assert y.requires_grad is False
+        assert y._backward is None
+
+
+@pytest.mark.requires_cuda
+@pytest.mark.requires_triton
+class TestEndToEndBackward:
+    """End-to-end tests for complete backward pass through multiple ops."""
+
+    def test_sum_of_add(self):
+        """Test backward through sum(a + b)."""
+        a = Tensor([1.0, 2.0, 3.0], requires_grad=True)
+        b = Tensor([4.0, 5.0, 6.0], requires_grad=True)
+
+        c = a.add(b)
+        loss = c.sum()
+
+        loss.backward()
+
+        # Both gradients should be all ones
+        assert a.grad.to_list() == pytest.approx([1.0, 1.0, 1.0])
+        assert b.grad.to_list() == pytest.approx([1.0, 1.0, 1.0])
+
+    def test_sum_of_relu(self):
+        """Test backward through sum(relu(x))."""
+        x = Tensor([-1.0, 0.0, 1.0, 2.0], requires_grad=True)
+
+        y = x.relu()  # [0, 0, 1, 2]
+        loss = y.sum()  # 3.0
+
+        loss.backward()
+
+        # Gradient: relu mask * 1 = [0, 0, 1, 1]
+        assert x.grad.to_list() == pytest.approx([0.0, 0.0, 1.0, 1.0])
+
+    def test_sum_of_relu_add(self):
+        """Test backward through sum(relu(a + b))."""
+        a = Tensor([-2.0, -1.0, 0.0, 1.0], requires_grad=True)
+        b = Tensor([1.0, 1.0, 1.0, 1.0], requires_grad=True)
+
+        c = a.add(b)  # [-1, 0, 1, 2]
+        y = c.relu()  # [0, 0, 1, 2]
+        loss = y.sum()  # 3.0
+
+        loss.backward()
+
+        # relu mask: [0, 0, 1, 1]
+        # a.grad = b.grad = [0, 0, 1, 1]
+        assert a.grad.to_list() == pytest.approx([0.0, 0.0, 1.0, 1.0])
+        assert b.grad.to_list() == pytest.approx([0.0, 0.0, 1.0, 1.0])
+
+    def test_add_bias_relu_sum(self):
+        """Test MLP-like forward: sum(relu(X + b))."""
+        x = Tensor([[-1.0, 1.0], [0.0, 2.0]], requires_grad=True)  # (2, 2)
+        b = Tensor([0.5, -0.5], requires_grad=True)  # (2,)
+
+        # Forward: y = relu(x + b)
+        # x + b = [[-0.5, 0.5], [0.5, 1.5]]
+        # relu = [[0, 0.5], [0.5, 1.5]]
+        y = x.add_bias(b).relu()
+        loss = y.sum()  # 0 + 0.5 + 0.5 + 1.5 = 2.5
+
+        assert loss.item() == pytest.approx(2.5)
+
+        loss.backward()
+
+        # relu mask on (x+b): [[0, 1], [1, 1]]
+        # x.grad = relu_mask * 1 = [[0, 1], [1, 1]]
+        x_result = x.grad.to_list()
+        assert x_result[0] == pytest.approx([0.0, 1.0])
+        assert x_result[1] == pytest.approx([1.0, 1.0])
+
+        # b.grad = sum over rows of relu_mask = [0+1, 1+1] = [1, 2]
+        assert b.grad.to_list() == pytest.approx([1.0, 2.0])
