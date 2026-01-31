@@ -53,6 +53,77 @@ class Module:
         """
         zero_grad(self.parameters())
 
+    def state_dict(self) -> dict[str, Tensor]:
+        """
+        Return a dict mapping parameter names to tensors.
+
+        Keys are dot-separated paths, e.g. "layers.0.weight", "fc1.bias".
+        Numeric segments indicate list indices. Same traversal as parameters().
+        """
+        result: dict[str, Tensor] = {}
+
+        def visit(obj: object, prefix: str) -> None:
+            for attr_name in dir(obj):
+                if attr_name.startswith("_"):
+                    continue
+                try:
+                    attr = getattr(obj, attr_name)
+                except AttributeError:
+                    continue
+                if isinstance(attr, Tensor) and attr.requires_grad:
+                    result[prefix + attr_name] = attr
+                elif isinstance(attr, Module):
+                    visit(attr, prefix + attr_name + ".")
+                elif isinstance(attr, list):
+                    for i, item in enumerate(attr):
+                        if isinstance(item, Module):
+                            visit(item, prefix + attr_name + "." + str(i) + ".")
+
+        visit(self, "")
+        return result
+
+    def load_state_dict(self, state: dict[str, Tensor], strict: bool = True) -> None:
+        """
+        Load parameters from a state dict (e.g. from state_dict() or load_safetensors).
+
+        Replaces each parameter tensor with the corresponding value from state.
+        Keys must be dot-separated paths matching state_dict() naming.
+
+        Args:
+            state: Dict mapping parameter names to tensors.
+            strict: If True, raise if keys in state don't match model or model keys
+                    are missing from state. If False, only load keys that exist.
+        """
+        own_keys = set(self.state_dict().keys())
+        state_keys = set(state.keys())
+        if strict:
+            if state_keys - own_keys:
+                raise ValueError(
+                    f"load_state_dict: unexpected key(s) in state: {state_keys - own_keys}"
+                )
+            if own_keys - state_keys:
+                raise ValueError(
+                    f"load_state_dict: missing key(s) in state: {own_keys - state_keys}"
+                )
+        for key, tensor in state.items():
+            if key not in own_keys:
+                continue
+            parts = key.split(".")
+            current: object = self
+            for segment in parts[:-1]:
+                try:
+                    if segment.isdigit():
+                        current = current[int(segment)]  # type: ignore[index]
+                    else:
+                        current = getattr(current, segment)
+                except (AttributeError, IndexError, KeyError) as e:
+                    raise ValueError(f"load_state_dict: cannot resolve key {key!r}") from e
+            last = parts[-1]
+            try:
+                setattr(current, last, tensor)
+            except AttributeError as e:
+                raise ValueError(f"load_state_dict: cannot set key {key!r}") from e
+
     def __call__(self, x: Tensor) -> Tensor:
         """
         Forward pass. Subclasses must implement this.

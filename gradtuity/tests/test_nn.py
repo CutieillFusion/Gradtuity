@@ -44,6 +44,71 @@ class TestModule:
             m(x)
 
 
+class TestModuleStateDict:
+    """Tests for Module.state_dict() and load_state_dict()."""
+
+    def test_linear_state_dict_keys(self):
+        """Linear state_dict has weight and bias."""
+        layer = Linear(2, 3)
+        state = layer.state_dict()
+        assert set(state.keys()) == {"weight", "bias"}
+        assert state["weight"] is layer.weight
+        assert state["bias"] is layer.bias
+
+    def test_mlp_state_dict_keys(self):
+        """MLP state_dict has layers.i.weight and layers.i.bias."""
+        model = MLP(2, [4, 1])
+        state = model.state_dict()
+        expected = {
+            "layers.0.weight",
+            "layers.0.bias",
+            "layers.1.weight",
+            "layers.1.bias",
+        }
+        assert set(state.keys()) == expected
+        assert state["layers.0.weight"] is model.layers[0].weight
+        assert state["layers.0.bias"] is model.layers[0].bias
+        assert state["layers.1.weight"] is model.layers[1].weight
+        assert state["layers.1.bias"] is model.layers[1].bias
+
+    def test_mlp_load_state_dict_round_trip(self):
+        """load_state_dict(state_dict()) preserves model; forward still runs."""
+        model = MLP(2, [4, 1])
+        state = model.state_dict()
+        model.load_state_dict(state)
+        x = Tensor([[1.0, 2.0], [3.0, 4.0]])
+        y = model(x)
+        assert y.shape == (2, 1)
+
+    def test_load_state_dict_strict_unexpected_key_raises(self):
+        """load_state_dict with unexpected key raises when strict=True."""
+        model = MLP(2, [4, 1])
+        state = model.state_dict()
+        state["fake.key"] = Tensor([1.0])
+        with pytest.raises(ValueError) as exc_info:
+            model.load_state_dict(state, strict=True)
+        assert "unexpected" in str(exc_info.value).lower()
+
+    def test_load_state_dict_strict_missing_key_raises(self):
+        """load_state_dict with missing key raises when strict=True."""
+        model = MLP(2, [4, 1])
+        state = model.state_dict()
+        state.pop("layers.0.bias")
+        with pytest.raises(ValueError) as exc_info:
+            model.load_state_dict(state, strict=True)
+        assert "missing" in str(exc_info.value).lower()
+
+    def test_load_state_dict_strict_false_ignores_extra(self):
+        """load_state_dict with extra key does not raise when strict=False."""
+        model = MLP(2, [4, 1])
+        state = model.state_dict()
+        state["extra.key"] = Tensor([1.0])
+        model.load_state_dict(state, strict=False)
+        x = Tensor([[1.0, 2.0]])
+        y = model(x)
+        assert y.shape == (1, 1)
+
+
 @pytest.mark.requires_triton
 class TestLinear:
     """Tests for Linear layer."""

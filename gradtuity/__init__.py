@@ -13,6 +13,7 @@ from .functional import (
     sgd_step,
 )
 from .nn import CNN, Conv2d, Flatten, Linear, MaxPool2d, MLP, Module
+from .tensor_io import load_safetensors, save_safetensors
 
 __all__ = [
     "Tensor",
@@ -32,4 +33,6 @@ __all__ = [
     "MaxPool2d",
     "CNN",
     "MLP",
+    "save_safetensors",
+    "load_safetensors",
 ]

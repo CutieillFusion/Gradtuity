@@ -59,6 +59,10 @@ from .kernels.reduce_kernels import (
     sum_all_kernel,
     sum_axis0_kernel,
 )
+from .tensor_io import (
+    save_safetensors,
+    load_safetensors,
+)
 
 # -------------------------------------------------------------------------
 # Storage and helpers
@@ -1602,6 +1606,50 @@ class Tensor:
                 f"item() only works for single-element tensors, got {self.numel} elements"
             )
         return self.to_list()[0]
+
+    def save(
+        self,
+        path: str,
+        name: str = "tensor",
+        metadata: dict[str, str] | None = None,
+    ) -> None:
+        """
+        Save this tensor to a SafeTensors-compatible file.
+
+        Args:
+            path: Output file path (.safetensors).
+            name: Key name for this tensor in the file.
+            metadata: Optional string->string metadata in __metadata__.
+        """
+
+        save_safetensors(path, {name: self}, metadata=metadata)
+
+    @staticmethod
+    def load(
+        path: str,
+        name: str = "tensor",
+        *,
+        requires_grad: bool = False,
+    ) -> "Tensor":
+        """
+        Load a single tensor from a SafeTensors-compatible file.
+
+        Args:
+            path: Path to .safetensors file.
+            name: Key name of the tensor to load.
+            requires_grad: Applied to the returned tensor.
+
+        Returns:
+            The tensor with the given name.
+
+        Raises:
+            KeyError: If name is not in the file.
+        """
+
+        state = load_safetensors(path, requires_grad=requires_grad)
+        if name not in state:
+            raise KeyError(f"tensor {name!r} not found in {path}")
+        return state[name]
 
     def __repr__(self) -> str:
         """Return string representation of the tensor."""

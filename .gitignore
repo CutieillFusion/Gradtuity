@@ -91,3 +91,6 @@ demos/plots/
 
 # Ruff Cache
 .ruff_cache/
+
+# SafeTensors Checkpoints
+*.safetensors
