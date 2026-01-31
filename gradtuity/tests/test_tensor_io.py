@@ -106,7 +106,9 @@ class TestCorruption:
             data[15] ^= 0xFF
         with open(path, "wb") as f:
             f.write(data)
-        with pytest.raises((ValueError, json.JSONDecodeError, UnicodeDecodeError)) as exc_info:
+        with pytest.raises(
+            (ValueError, json.JSONDecodeError, UnicodeDecodeError)
+        ) as exc_info:
             load_safetensors(str(path))
         msg = str(exc_info.value).lower()
         assert "corrupt" in msg or "json" in msg or "utf-8" in msg or "decode" in msg
@@ -129,7 +131,10 @@ class TestCorruption:
             f.write(data[8 + n :])  # only 8 bytes of data, so end (16) > data_size (8)
         with pytest.raises(ValueError) as exc_info:
             load_safetensors(str(path))
-        assert "offset" in str(exc_info.value).lower() or "buffer" in str(exc_info.value).lower()
+        assert (
+            "offset" in str(exc_info.value).lower()
+            or "buffer" in str(exc_info.value).lower()
+        )
 
     def test_invalid_dtype_fails(self, tmp_path):
         t = Tensor([1.0])
@@ -147,7 +152,9 @@ class TestCorruption:
             f.write(data[8 + n :])
         with pytest.raises(ValueError) as exc_info:
             load_safetensors(str(path))
-        assert "F32" in str(exc_info.value) or "supported" in str(exc_info.value).lower()
+        assert (
+            "F32" in str(exc_info.value) or "supported" in str(exc_info.value).lower()
+        )
 
     def test_invalid_rank_fails(self, tmp_path):
         t = Tensor([1.0])
@@ -216,7 +223,10 @@ class TestCorruption:
         path.write_bytes(struct.pack("<Q", 100)[:4])  # only 4 bytes
         with pytest.raises(ValueError) as exc_info:
             load_safetensors(str(path))
-        assert "truncated" in str(exc_info.value).lower() or "header" in str(exc_info.value).lower()
+        assert (
+            "truncated" in str(exc_info.value).lower()
+            or "header" in str(exc_info.value).lower()
+        )
 
     def test_truncated_header(self, tmp_path):
         t = Tensor([1.0])
@@ -231,7 +241,10 @@ class TestCorruption:
             f.write(data[8 : 8 + n // 2])
         with pytest.raises(ValueError) as exc_info:
             load_safetensors(str(path))
-        assert "truncated" in str(exc_info.value).lower() or "header" in str(exc_info.value).lower()
+        assert (
+            "truncated" in str(exc_info.value).lower()
+            or "header" in str(exc_info.value).lower()
+        )
 
     def test_truncated_data(self, tmp_path):
         t = Tensor([1.0, 2.0, 3.0, 4.0])  # 16 bytes
@@ -244,7 +257,10 @@ class TestCorruption:
             f.write(data[:-4])
         with pytest.raises(ValueError) as exc_info:
             load_safetensors(str(path))
-        assert "truncated" in str(exc_info.value).lower() or "data" in str(exc_info.value).lower()
+        assert (
+            "truncated" in str(exc_info.value).lower()
+            or "data" in str(exc_info.value).lower()
+        )
 
     def test_header_leading_whitespace_loads(self, tmp_path):
         t = Tensor([1.0])
@@ -324,7 +340,9 @@ class TestMetadata:
     def test_custom_metadata(self, tmp_path):
         t = Tensor([1.0])
         path = tmp_path / "t.safetensors"
-        save_safetensors(str(path), {"x": t}, metadata={"creator": "test", "version": "1"})
+        save_safetensors(
+            str(path), {"x": t}, metadata={"creator": "test", "version": "1"}
+        )
         state = load_safetensors(str(path))
         assert state["x"].to_list() == [1.0]
 
@@ -333,7 +351,10 @@ class TestMetadata:
         path = tmp_path / "t.safetensors"
         with pytest.raises(ValueError) as exc_info:
             save_safetensors(str(path), {"x": t}, metadata={"creator": 123})
-        assert "metadata" in str(exc_info.value).lower() and "string" in str(exc_info.value).lower()
+        assert (
+            "metadata" in str(exc_info.value).lower()
+            and "string" in str(exc_info.value).lower()
+        )
 
     def test_metadata_merges_into_header(self, tmp_path):
         t = Tensor([1.0])
@@ -354,7 +375,10 @@ class TestValidation:
         path = tmp_path / "t.safetensors"
         with pytest.raises(ValueError) as exc_info:
             save_safetensors(str(path), {})
-        assert "empty" in str(exc_info.value).lower() or "not" in str(exc_info.value).lower()
+        assert (
+            "empty" in str(exc_info.value).lower()
+            or "not" in str(exc_info.value).lower()
+        )
 
     def test_device_not_cuda_raises(self, tmp_path):
         t = Tensor([1.0])
@@ -369,7 +393,10 @@ class TestValidation:
         path = tmp_path / "t.safetensors"
         with pytest.raises(ValueError) as exc_info:
             save_safetensors(str(path), {123: t})  # type: ignore[dict-item]
-        assert "key" in str(exc_info.value).lower() and "string" in str(exc_info.value).lower()
+        assert (
+            "key" in str(exc_info.value).lower()
+            and "string" in str(exc_info.value).lower()
+        )
 
     def test_include_grads_key_collision_raises(self, tmp_path):
         t = Tensor([1.0, 2.0], requires_grad=True)
@@ -405,7 +432,10 @@ class TestLoaderHeaderEdgeCases:
             f.write(data[8 + n :])
         with pytest.raises(ValueError) as exc_info:
             load_safetensors(str(path))
-        assert "rank" in str(exc_info.value).lower() or "dim" in str(exc_info.value).lower()
+        assert (
+            "rank" in str(exc_info.value).lower()
+            or "dim" in str(exc_info.value).lower()
+        )
 
     def test_non_int_dim_fails(self, tmp_path):
         t = Tensor([1.0])
@@ -423,7 +453,10 @@ class TestLoaderHeaderEdgeCases:
             f.write(data[8 + n :])
         with pytest.raises(ValueError) as exc_info:
             load_safetensors(str(path))
-        assert "rank" in str(exc_info.value).lower() or "dim" in str(exc_info.value).lower()
+        assert (
+            "rank" in str(exc_info.value).lower()
+            or "dim" in str(exc_info.value).lower()
+        )
 
     def test_data_offsets_not_length_two_fails(self, tmp_path):
         t = Tensor([1.0])
@@ -441,7 +474,10 @@ class TestLoaderHeaderEdgeCases:
             f.write(data[8 + n :])
         with pytest.raises(ValueError) as exc_info:
             load_safetensors(str(path))
-        assert "data_offsets" in str(exc_info.value).lower() or "offset" in str(exc_info.value).lower()
+        assert (
+            "data_offsets" in str(exc_info.value).lower()
+            or "offset" in str(exc_info.value).lower()
+        )
 
     def test_missing_required_fields_fails(self, tmp_path):
         path = tmp_path / "t.safetensors"
@@ -454,7 +490,10 @@ class TestLoaderHeaderEdgeCases:
             f.write(b"\x00" * 4)  # 4 bytes of data
         with pytest.raises(ValueError) as exc_info:
             load_safetensors(str(path))
-        assert "dtype" in str(exc_info.value).lower() or "missing" in str(exc_info.value).lower()
+        assert (
+            "dtype" in str(exc_info.value).lower()
+            or "missing" in str(exc_info.value).lower()
+        )
 
 
 class TestSaveTimeValidation:

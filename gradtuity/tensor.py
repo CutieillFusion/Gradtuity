@@ -50,12 +50,16 @@ from .kernels.pool_kernels import (
     maxpool2d_backward_kernel,
     maxpool2d_forward_kernel,
 )
+from .kernels.loss_kernels import (
+    cross_entropy_backward_kernel,
+    cross_entropy_forward_kernel,
+    mse_loss_backward_kernel,
+    mse_loss_kernel,
+)
 from .kernels.reduce_kernels import (
     add_bias_kernel,
     add_scalar_inplace_kernel,
     argmax_axis1_kernel,
-    mse_loss_backward_kernel,
-    mse_loss_kernel,
     sum_all_kernel,
     sum_axis0_kernel,
 )
@@ -775,6 +779,83 @@ class Tensor:
             )
 
         out._set_graph(parents=(self, target), backward_fn=_backward)
+        return out
+
+    def cross_entropy(self, targets: "Tensor", reduction: str = "mean") -> "Tensor":
+        """
+        Compute cross-entropy loss: L = -mean_i(log(softmax(logits_i)[targets_i])).
+
+        Numerically stable via log-softmax (max-subtraction + logsumexp).
+        Backward only into logits; targets are non-differentiable.
+
+        Note:
+            Backward performs one device→host read of the scalar gradient
+            (typically 1.0). This sync is intentional for the current API.
+
+        Args:
+            targets: 1D tensor of class indices (float32 storage), shape (B,).
+            reduction: "mean" (default) or "sum".
+
+        Returns:
+            Scalar tensor containing the cross-entropy loss.
+
+        Raises:
+            ValueError: If shapes or reduction are invalid.
+        """
+        if self.ndim != 2:
+            raise ValueError(f"cross_entropy expects 2D logits, got ndim={self.ndim}")
+        if targets.ndim != 1:
+            raise ValueError(
+                f"cross_entropy expects 1D targets, got ndim={targets.ndim}"
+            )
+        B, C = self.shape
+        if targets.shape[0] != B:
+            raise ValueError(
+                f"cross_entropy batch size mismatch: logits {B} vs targets {targets.shape[0]}"
+            )
+        if reduction not in ("mean", "sum"):
+            raise ValueError(
+                f"cross_entropy reduction must be 'mean' or 'sum', got {reduction!r}"
+            )
+        if C > 1024:
+            raise ValueError(f"cross_entropy supports at most 1024 classes, got C={C}")
+        # BLOCK_C: next power of 2 >= C, capped at 1024
+        block_c = min(1024, 1 << (C - 1).bit_length()) if C >= 1 else 1
+
+        out = empty_tensor((1,), zero=True)
+        cross_entropy_forward_kernel[(B,)](
+            self.ptr,
+            targets.ptr,
+            out.ptr,
+            B=B,
+            C=C,
+            BLOCK_C=block_c,
+        )
+        if reduction == "mean":
+            scale = 1.0 / B
+            mul_scalar_kernel[grid1d(1)](out.ptr, scale, out.ptr, 1, BLOCK=BLOCK)
+
+        logits_tensor = self
+        targets_tensor = targets
+
+        def _backward(out_grad: Tensor) -> None:
+            grad_bytes = cuda_memcpy_dtoh(out_grad.ptr, 4)
+            grad_val = struct.unpack("f", grad_bytes)[0]
+            scale = grad_val / B if reduction == "mean" else grad_val
+
+            if logits_tensor.requires_grad:
+                ensure_grad(logits_tensor)
+                cross_entropy_backward_kernel[(B,)](
+                    logits_tensor.grad.ptr,
+                    logits_tensor.ptr,
+                    targets_tensor.ptr,
+                    scale=scale,
+                    B=B,
+                    C=C,
+                    BLOCK_C=block_c,
+                )
+
+        out._set_graph(parents=(self, targets), backward_fn=_backward)
         return out
 
     def argmax(self, dim: int = 1) -> "Tensor":

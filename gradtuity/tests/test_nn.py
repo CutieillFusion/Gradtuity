@@ -888,6 +888,105 @@ class TestMSELoss:
 
 
 # =============================================================================
+# Tests for Cross-Entropy Loss
+# =============================================================================
+
+
+@pytest.mark.requires_triton
+class TestCrossEntropyLoss:
+    """Tests for fused cross-entropy loss operation."""
+
+    def test_cross_entropy_forward_hand_computed(self):
+        """Test cross_entropy forward with hand-computed expected value."""
+        # B=2, C=3. Row 0: logits [0,1,0], target 1; Row 1: logits [0,0,1], target 2.
+        # lse_0 = log(exp(0)+exp(1)+exp(0)) = log(1+2.718+1) ≈ 1.552; loss_0 = lse_0 - 1 = 0.552
+        # lse_1 ≈ 1.552; loss_1 = lse_1 - 1 = 0.552. Sum = 1.104, mean = 0.552
+        logits = Tensor([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+        targets = Tensor([1.0, 2.0])  # class indices as float32
+
+        loss_mean = logits.cross_entropy(targets, reduction="mean")
+        loss_sum = logits.cross_entropy(targets, reduction="sum")
+
+        assert loss_mean.shape == (1,)
+        assert loss_sum.shape == (1,)
+        assert loss_mean.item() == pytest.approx(0.552, rel=1e-2)
+        assert loss_sum.item() == pytest.approx(1.104, rel=1e-2)
+
+    def test_cross_entropy_backward_hand_computed(self):
+        """Test cross_entropy backward: grad = scale * (softmax - one_hot)."""
+        logits = Tensor([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], requires_grad=True)
+        targets = Tensor([1.0, 2.0])
+
+        loss = logits.cross_entropy(targets, reduction="mean")
+        loss.backward()
+
+        # For mean: scale = 1/B = 0.5. softmax row0 = exp([0,1,0]-lse)/sum = [0.212, 0.576, 0.212], one_hot(1) = [0,1,0]
+        # grad row0 = 0.5 * (softmax - one_hot) ≈ [0.106, -0.212, 0.106]; row1 similarly
+        grad = logits.grad.to_list()
+        assert len(grad) == 2
+        assert grad[0][0] == pytest.approx(0.106, rel=1e-2)
+        assert grad[0][1] == pytest.approx(-0.212, rel=1e-2)
+        assert grad[0][2] == pytest.approx(0.106, rel=1e-2)
+        assert grad[1][0] == pytest.approx(0.106, rel=1e-2)
+        assert grad[1][1] == pytest.approx(0.106, rel=1e-2)
+        assert grad[1][2] == pytest.approx(-0.212, rel=1e-2)
+        assert targets.grad is None
+
+    def test_cross_entropy_reduction_sum(self):
+        """Test cross_entropy with reduction='sum' and its backward."""
+        logits = Tensor([[1.0, 2.0, 3.0], [0.0, 1.0, 0.0]], requires_grad=True)
+        targets = Tensor([2.0, 1.0])
+
+        loss = logits.cross_entropy(targets, reduction="sum")
+        loss.backward()
+
+        # loss is sum of per-sample losses (no 1/B); grad scale = 1.0
+        assert loss.shape == (1,)
+        assert logits.grad is not None
+        assert logits.grad.shape == logits.shape
+
+    def test_cross_entropy_c_not_power_of_two(self):
+        """Test cross_entropy when C is not a power of two (e.g. C=5)."""
+        logits = Tensor([[0.1, 0.2, 0.3, 0.4, 0.0]] * 4)  # (4, 5)
+        targets = Tensor([0.0, 1.0, 2.0, 3.0])
+
+        loss = logits.cross_entropy(targets, reduction="mean")
+        assert loss.shape == (1,)
+        assert loss.item() > 0
+
+    def test_cross_entropy_logits_no_grad(self):
+        """Test cross_entropy when logits do not require grad (forward only)."""
+        logits = Tensor([[1.0, 2.0], [0.0, 1.0]], requires_grad=False)
+        targets = Tensor([0.0, 1.0])
+
+        loss = logits.cross_entropy(targets, reduction="mean")
+        # Loss has no grad graph when logits.requires_grad=False, so we do not call backward()
+        assert loss.shape == (1,)
+        assert logits.grad is None
+        assert targets.grad is None
+
+    def test_cross_entropy_shape_errors(self):
+        """Test cross_entropy raises for invalid shapes."""
+        logits_2d = Tensor([[1.0, 2.0], [3.0, 4.0]])
+        targets_1d = Tensor([0.0, 1.0])
+
+        with pytest.raises(ValueError, match="2D logits"):
+            Tensor([1.0, 2.0, 3.0]).cross_entropy(targets_1d)
+        with pytest.raises(ValueError, match="1D targets"):
+            logits_2d.cross_entropy(Tensor([[0.0], [1.0]]))
+        with pytest.raises(ValueError, match="batch size mismatch"):
+            logits_2d.cross_entropy(Tensor([0.0, 1.0, 2.0]))
+
+    def test_cross_entropy_reduction_error(self):
+        """Test cross_entropy raises for invalid reduction."""
+        logits = Tensor([[1.0, 2.0], [0.0, 1.0]])
+        targets = Tensor([0.0, 1.0])
+
+        with pytest.raises(ValueError, match="reduction"):
+            logits.cross_entropy(targets, reduction="none")
+
+
+# =============================================================================
 # Tests for GPU Argmax
 # =============================================================================
 

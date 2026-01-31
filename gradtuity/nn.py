@@ -117,7 +117,9 @@ class Module:
                     else:
                         current = getattr(current, segment)
                 except (AttributeError, IndexError, KeyError) as e:
-                    raise ValueError(f"load_state_dict: cannot resolve key {key!r}") from e
+                    raise ValueError(
+                        f"load_state_dict: cannot resolve key {key!r}"
+                    ) from e
             last = parts[-1]
             try:
                 setattr(current, last, tensor)

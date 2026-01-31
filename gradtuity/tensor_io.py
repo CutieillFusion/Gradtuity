@@ -131,14 +131,20 @@ def save_safetensors(
     if metadata:
         for k, v in metadata.items():
             if not isinstance(v, str):
-                raise ValueError(f"metadata values must be strings, got {type(v).__name__} for key {k!r}")
+                raise ValueError(
+                    f"metadata values must be strings, got {type(v).__name__} for key {k!r}"
+                )
             meta[k] = v
 
     header = {"__metadata__": meta, **header_tensors}
 
-    header_bytes = json.dumps(header, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    header_bytes = json.dumps(header, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
     if len(header_bytes) > _MAX_HEADER_BYTES:
-        raise ValueError(f"header size {len(header_bytes)} exceeds max {_MAX_HEADER_BYTES}")
+        raise ValueError(
+            f"header size {len(header_bytes)} exceeds max {_MAX_HEADER_BYTES}"
+        )
 
     with open(path, "wb") as f:
         f.write(struct.pack("<Q", len(header_bytes)))
@@ -178,16 +184,22 @@ def load_safetensors(
 
     file_size = os.stat(path).st_size
     if file_size < 8:
-        raise ValueError("corrupt or unsupported safetensors file: file too small for header length")
+        raise ValueError(
+            "corrupt or unsupported safetensors file: file too small for header length"
+        )
 
     with open(path, "rb") as f:
         n_bytes = f.read(8)
         if len(n_bytes) != 8:
-            raise ValueError("corrupt or unsupported safetensors file: truncated header length")
+            raise ValueError(
+                "corrupt or unsupported safetensors file: truncated header length"
+            )
         N = struct.unpack("<Q", n_bytes)[0]
 
         if N == 0:
-            raise ValueError("corrupt or unsupported safetensors file: header length is 0")
+            raise ValueError(
+                "corrupt or unsupported safetensors file: header length is 0"
+            )
         if N > _MAX_HEADER_BYTES:
             raise ValueError(
                 f"corrupt or unsupported safetensors file: header length {N} exceeds max {_MAX_HEADER_BYTES}"
@@ -195,10 +207,14 @@ def load_safetensors(
 
         header_bytes = f.read(N)
         if len(header_bytes) != N:
-            raise ValueError("corrupt or unsupported safetensors file: truncated header")
+            raise ValueError(
+                "corrupt or unsupported safetensors file: truncated header"
+            )
 
     if not header_bytes.lstrip().startswith(b"{"):
-        raise ValueError("corrupt or unsupported safetensors file: header must start with {")
+        raise ValueError(
+            "corrupt or unsupported safetensors file: header must start with {"
+        )
 
     try:
         header_str = header_bytes.decode("utf-8")
@@ -209,16 +225,22 @@ def load_safetensors(
     try:
         header = json.loads(header_str)
     except json.JSONDecodeError as e:
-        raise ValueError(f"corrupt or unsupported safetensors file: invalid JSON ({e})") from e
+        raise ValueError(
+            f"corrupt or unsupported safetensors file: invalid JSON ({e})"
+        ) from e
 
     if not isinstance(header, dict):
-        raise ValueError("corrupt or unsupported safetensors file: header must be a JSON object")
+        raise ValueError(
+            "corrupt or unsupported safetensors file: header must be a JSON object"
+        )
 
     # Validate __metadata__
     if "__metadata__" in header:
         meta = header["__metadata__"]
         if not isinstance(meta, dict):
-            raise ValueError("corrupt or unsupported safetensors file: __metadata__ must be an object")
+            raise ValueError(
+                "corrupt or unsupported safetensors file: __metadata__ must be an object"
+            )
         for k, v in meta.items():
             if not isinstance(v, str):
                 raise ValueError(
@@ -236,7 +258,9 @@ def load_safetensors(
         if key == "__metadata__":
             continue
         if not isinstance(val, dict):
-            raise ValueError(f"corrupt or unsupported safetensors file: tensor entry {key!r} must be an object")
+            raise ValueError(
+                f"corrupt or unsupported safetensors file: tensor entry {key!r} must be an object"
+            )
         if "dtype" not in val or "shape" not in val or "data_offsets" not in val:
             raise ValueError(
                 f"corrupt or unsupported safetensors file: tensor entry {key!r} missing dtype/shape/data_offsets"
@@ -252,16 +276,24 @@ def load_safetensors(
             if not isinstance(d, int) or d <= 0:
                 raise ValueError("rank must be 1..4; dims must be > 0")
         if not isinstance(data_offsets, (list, tuple)) or len(data_offsets) != 2:
-            raise ValueError(f"corrupt or unsupported safetensors file: data_offsets must be [BEGIN, END] for {key!r}")
+            raise ValueError(
+                f"corrupt or unsupported safetensors file: data_offsets must be [BEGIN, END] for {key!r}"
+            )
         begin, end = int(data_offsets[0]), int(data_offsets[1])
         if begin < 0 or end < begin:
-            raise ValueError("corrupt or unsupported safetensors file: offset outside data buffer")
+            raise ValueError(
+                "corrupt or unsupported safetensors file: offset outside data buffer"
+            )
         expected_bytes = _prod(tuple(shape)) * F32_BYTES
         if end - begin != expected_bytes:
             raise ValueError("tensor byte size does not match shape*dtype")
         if begin >= data_size or end > data_size:
-            raise ValueError("corrupt or unsupported safetensors file: offset outside data buffer")
-        tensor_entries.append((key, {"shape": tuple(shape), "begin": begin, "end": end}))
+            raise ValueError(
+                "corrupt or unsupported safetensors file: offset outside data buffer"
+            )
+        tensor_entries.append(
+            (key, {"shape": tuple(shape), "begin": begin, "end": end})
+        )
 
     # Sort by begin and check no holes / no overlap
     tensor_entries.sort(key=lambda x: x[1]["begin"])
@@ -292,7 +324,9 @@ def load_safetensors(
             f.seek(data_start + begin)
             host_bytes = f.read(expected_bytes)
             if len(host_bytes) != expected_bytes:
-                raise ValueError("corrupt or unsupported safetensors file: truncated data")
+                raise ValueError(
+                    "corrupt or unsupported safetensors file: truncated data"
+                )
             st = alloc_storage(expected_bytes, zero=False)
             cuda_memcpy_htod(st.ptr, host_bytes)
             t = Tensor._wrap(st, shape, requires_grad=requires_grad, name=key)

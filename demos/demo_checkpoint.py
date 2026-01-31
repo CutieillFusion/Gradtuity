@@ -58,7 +58,10 @@ def main() -> None:
     # Fixed random inputs/targets for reproducibility
     X = randn((batch_size, 2), seed=42)
     # Fake targets: sign of sum of coords (simple separable task)
-    Y_raw = [[1.0] if (X.to_list()[i][0] + X.to_list()[i][1] > 0) else [-1.0] for i in range(batch_size)]
+    Y_raw = [
+        [1.0] if (X.to_list()[i][0] + X.to_list()[i][1] > 0) else [-1.0]
+        for i in range(batch_size)
+    ]
     Y = Tensor(Y_raw)
 
     print("Training...")
