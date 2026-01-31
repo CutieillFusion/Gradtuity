@@ -66,6 +66,14 @@ class TestTensorConstruction:
         assert t.shape == (2, 2)
         assert t.to_list() == [[1.0, 2.0], [3.0, 4.0]]
 
+    def test_create_4d_tensor(self):
+        """Test creating a 4D tensor (e.g. NCHW for conv)."""
+        data = [[[[1.0, 2.0], [3.0, 4.0]]]]  # (1, 1, 2, 2)
+        t = Tensor(data)
+        assert t.shape == (1, 1, 2, 2)
+        assert t.numel == 4
+        assert t.ndim == 4
+
     def test_create_with_integers(self):
         """Test that integers are converted to floats."""
         data = [1, 2, 3]
@@ -94,9 +102,9 @@ class TestTensorValidation:
         with pytest.raises((ValueError, TypeError)):
             Tensor(42.0)  # type: ignore
 
-    def test_reject_rank_3(self):
-        """Test that rank 3 tensors are rejected."""
-        data = [[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]
+    def test_reject_rank_5(self):
+        """Test that rank 5 tensors are rejected (only 1-4 supported)."""
+        data = [[[[[1.0]]]]]  # 5 levels
         with pytest.raises(ValueError, match="rank"):
             Tensor(data)
 
@@ -186,6 +194,42 @@ class TestTensorToList:
         for i in range(len(original)):
             for j in range(len(original[0])):
                 assert result[i][j] == pytest.approx(original[i][j], rel=1e-6)
+
+    def test_to_list_4d(self):
+        """Test converting 4D tensor back to nested list."""
+        data = [[[[1.0, 2.0], [3.0, 4.0]]]]  # (1, 1, 2, 2)
+        t = Tensor(data)
+        result = t.to_list()
+        assert len(result) == 1
+        assert len(result[0]) == 1
+        assert len(result[0][0]) == 2
+        assert result[0][0][0] == pytest.approx([1.0, 2.0])
+        assert result[0][0][1] == pytest.approx([3.0, 4.0])
+
+
+class TestTensorView:
+    """Tests for view() and shape manipulation."""
+
+    def test_view_2d_to_2d(self):
+        """Test view with same numel."""
+        t = Tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+        v = t.view((3, 2))
+        assert v.shape == (3, 2)
+        assert v.numel == t.numel
+        assert v.data_ptr() == t.data_ptr()
+
+    def test_view_with_infer_dim(self):
+        """Test view with -1 infer dimension."""
+        t = Tensor([[1.0, 2.0], [3.0, 4.0]])
+        v = t.view((1, -1))
+        assert v.shape == (1, 4)
+        assert v.numel == 4
+
+    def test_view_incompatible_numel_raises(self):
+        """Test view with wrong numel raises."""
+        t = Tensor([1.0, 2.0, 3.0])
+        with pytest.raises(ValueError, match="elements"):
+            t.view((2, 2))
 
 
 class TestTensorItem:
@@ -296,10 +340,10 @@ class TestTensorFromPtr:
         assert t2.requires_grad is True
 
     def test_from_ptr_rejects_invalid_rank(self):
-        """Test that _from_ptr rejects invalid ranks."""
+        """Test that _from_ptr rejects invalid ranks (only 1-4 supported)."""
         t = Tensor([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
         with pytest.raises(ValueError, match="rank"):
-            Tensor._from_ptr(t.data_ptr(), shape=(2, 3, 1), owns_memory=False)
+            Tensor._from_ptr(t.data_ptr(), shape=(1, 1, 1, 1, 1), owns_memory=False)
 
 
 class TestTensorRepr:

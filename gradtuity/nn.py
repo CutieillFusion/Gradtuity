@@ -4,10 +4,14 @@ Neural network modules for Gradtuity.
 Provides high-level abstractions for building neural networks:
 - Module: Base class for all neural network modules
 - Linear: Fully connected layer (Y = X @ W + b)
+- Flatten: Reshape to 2D (batch, -1)
+- Conv2d: 2D convolution
 - MLP: Multi-layer perceptron
 """
 
 from __future__ import annotations
+
+import math
 
 from .functional import randn, zero_grad, zeros
 from .tensor import Tensor
@@ -114,6 +118,187 @@ class Linear(Module):
 
     def __repr__(self) -> str:
         return f"Linear(in_features={self.in_features}, out_features={self.out_features})"
+
+
+class Flatten(Module):
+    """
+    Flatten dimensions from start_dim to the end into a single dimension.
+
+    For input (N, C, H, W), output is (N, C*H*W). Used to connect conv layers
+    to linear layers.
+
+    Args:
+        start_dim: First dimension to flatten (default 1; keep batch dim).
+    """
+
+    def __init__(self, start_dim: int = 1) -> None:
+        self.start_dim = start_dim
+
+    def __call__(self, x: Tensor) -> Tensor:
+        """
+        Forward: reshape to (dim_0, ..., dim_start_dim-1, -1).
+
+        Args:
+            x: Input tensor of any rank >= 2.
+
+        Returns:
+            Output tensor of shape (x.shape[0], ..., prod(rest)).
+        """
+        s = x.shape
+        if len(s) < 2:
+            raise ValueError(f"Flatten requires at least 2D input, got shape {s}")
+        if self.start_dim < 0:
+            start_dim = len(s) + self.start_dim
+        else:
+            start_dim = self.start_dim
+        if start_dim <= 0 or start_dim >= len(s):
+            raise ValueError(
+                f"Flatten start_dim must be in [1, {len(s)-1}], got {self.start_dim}"
+            )
+        kept = s[:start_dim]
+        rest = s[start_dim:]
+        flat_size = math.prod(rest)
+        out_shape = kept + (flat_size,)
+        return x.view(out_shape)
+
+    def parameters(self) -> list[Tensor]:
+        """Flatten has no parameters."""
+        return []
+
+    def __repr__(self) -> str:
+        return f"Flatten(start_dim={self.start_dim})"
+
+
+class Conv2d(Module):
+    """
+    2D convolution: Y = conv2d(X, weight) + bias.
+
+    Args:
+        in_channels: Number of input channels.
+        out_channels: Number of output channels.
+        kernel_size: Kernel size (int or tuple; int means square).
+        stride: Stride (default 1).
+        padding: Padding (default 0).
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int | tuple[int, int],
+        stride: int = 1,
+        padding: int = 0,
+    ) -> None:
+        if isinstance(kernel_size, int):
+            kH = kW = kernel_size
+        else:
+            kH, kW = kernel_size
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = (kH, kW)
+        self.stride = stride
+        self.padding = padding
+        # Weight: (out_channels, in_channels, kH, kW). Kaiming-like init
+        std = (2.0 / (in_channels * kH * kW)) ** 0.5
+        self.weight = randn(
+            (out_channels, in_channels, kH, kW),
+            requires_grad=True,
+            std=std,
+        )
+        self.bias = zeros((out_channels,), requires_grad=True)
+
+    def __call__(self, x: Tensor) -> Tensor:
+        """
+        Forward: conv2d(x, weight, bias, stride, padding).
+        """
+        return x.conv2d(
+            self.weight,
+            self.bias,
+            stride=self.stride,
+            padding=self.padding,
+        )
+
+    def parameters(self) -> list[Tensor]:
+        return [self.weight, self.bias]
+
+    def __repr__(self) -> str:
+        kH, kW = self.kernel_size
+        return (
+            f"Conv2d({self.in_channels}, {self.out_channels}, "
+            f"kernel_size=({kH}, {kW}), stride={self.stride}, padding={self.padding})"
+        )
+
+
+class MaxPool2d(Module):
+    """
+    2D max pooling: (N, C, H, W) -> (N, C, H_out, W_out).
+
+    Args:
+        kernel_size: Window size (int or tuple; default 2).
+        stride: Stride (defaults to kernel_size if not set).
+    """
+
+    def __init__(
+        self,
+        kernel_size: int | tuple[int, int] = 2,
+        stride: int | tuple[int, int] | None = None,
+    ) -> None:
+        self.kernel_size = kernel_size
+        self.stride = stride
+
+    def __call__(self, x: Tensor) -> Tensor:
+        return x.maxpool2d(
+            kernel_size=self.kernel_size,
+            stride=self.stride,
+        )
+
+    def parameters(self) -> list[Tensor]:
+        return []
+
+    def __repr__(self) -> str:
+        return f"MaxPool2d(kernel_size={self.kernel_size}, stride={self.stride})"
+
+
+class CNN(Module):
+    """
+    Small CNN for MNIST: Conv -> ReLU -> Pool -> Conv -> ReLU -> Pool -> Flatten -> Linear -> ReLU -> Linear.
+
+    Input (N, 1, 28, 28), output (N, 10).
+    """
+
+    def __init__(self) -> None:
+        self.conv1 = Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
+        self.pool1 = MaxPool2d(kernel_size=2, stride=2)
+        self.conv2 = Conv2d(32, 64, kernel_size=3, stride=1, padding=1)
+        self.pool2 = MaxPool2d(kernel_size=2, stride=2)
+        self.flatten = Flatten(start_dim=1)
+        self.fc1 = Linear(64 * 7 * 7, 128)
+        self.fc2 = Linear(128, 10)
+
+    def __call__(self, x: Tensor) -> Tensor:
+        x = self.conv1(x)
+        x = x.relu()
+        x = self.pool1(x)
+        x = self.conv2(x)
+        x = x.relu()
+        x = self.pool2(x)
+        x = self.flatten(x)
+        x = x.linear_relu(self.fc1.weight, self.fc1.bias)
+        x = x.linear(self.fc2.weight, self.fc2.bias)
+        return x
+
+    def parameters(self) -> list[Tensor]:
+        params = []
+        params.extend(self.conv1.parameters())
+        params.extend(self.conv2.parameters())
+        params.extend(self.fc1.parameters())
+        params.extend(self.fc2.parameters())
+        return params
+
+    def __repr__(self) -> str:
+        return (
+            "CNN(conv1->relu->pool1->conv2->relu->pool2->flatten->fc1->relu->fc2)"
+        )
 
 
 class MLP(Module):

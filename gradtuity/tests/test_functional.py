@@ -52,10 +52,10 @@ class TestZeros:
         t = zeros((2, 3), requires_grad=True)
         assert t.requires_grad is True
 
-    def test_zeros_rejects_rank_3(self):
-        """Test that zeros rejects rank 3."""
+    def test_zeros_rejects_rank_5(self):
+        """Test that zeros rejects rank 5 (only ranks 1-4 supported)."""
         with pytest.raises(ValueError, match="rank"):
-            zeros((2, 3, 4))
+            zeros((2, 2, 2, 2, 2))
 
 
 @pytest.mark.requires_cuda
@@ -225,10 +225,10 @@ class TestRandn:
         assert abs(mean) < 0.2  # Mean should be close to 0
         assert 0.35 < std < 0.65  # Std should be close to 0.5
 
-    def test_randn_rejects_rank_3(self):
-        """Test that randn rejects rank 3."""
+    def test_randn_rejects_rank_5(self):
+        """Test that randn rejects rank 5 (only ranks 1-4 supported)."""
         with pytest.raises(ValueError, match="rank"):
-            randn((2, 3, 4))
+            randn((2, 2, 2, 2, 2))
 
 
 @pytest.mark.requires_cuda

@@ -19,15 +19,15 @@ def zeros(shape: tuple[int, ...], requires_grad: bool = False) -> Tensor:
     Allocate a zero-initialized GPU tensor.
 
     Args:
-        shape: Shape of the tensor (rank 1 or 2).
+        shape: Shape of the tensor (rank 1, 2, 3, or 4).
         requires_grad: Whether to track gradients.
 
     Returns:
         Tensor filled with zeros.
     """
     # Validate shape
-    if len(shape) not in (1, 2):
-        raise ValueError(f"Only rank 1 or 2 tensors supported, got rank {len(shape)}")
+    if len(shape) not in (1, 2, 3, 4):
+        raise ValueError(f"Only rank 1, 2, 3, or 4 tensors supported, got rank {len(shape)}")
 
     # Compute total elements and bytes
     numel = 1
@@ -61,7 +61,7 @@ def ones(shape: tuple[int, ...], requires_grad: bool = False) -> Tensor:
     Allocate a tensor filled with 1.0 via Triton fill kernel.
 
     Args:
-        shape: Shape of the tensor (rank 1 or 2).
+        shape: Shape of the tensor (rank 1, 2, 3, or 4).
         requires_grad: Whether to track gradients.
 
     Returns:
@@ -105,7 +105,7 @@ def randn(
     Uses Python's random module for generation, then transfers to GPU.
 
     Args:
-        shape: Shape of the tensor (rank 1 or 2).
+        shape: Shape of the tensor (rank 1, 2, 3, or 4).
         requires_grad: Whether to track gradients.
         seed: Optional random seed for reproducibility.
         std: Standard deviation of the normal distribution (default 1.0).
@@ -114,8 +114,8 @@ def randn(
         Tensor with random normal values.
     """
     # Validate shape
-    if len(shape) not in (1, 2):
-        raise ValueError(f"Only rank 1 or 2 tensors supported, got rank {len(shape)}")
+    if len(shape) not in (1, 2, 3, 4):
+        raise ValueError(f"Only rank 1, 2, 3, or 4 tensors supported, got rank {len(shape)}")
 
     # Set seed if provided
     if seed is not None:
@@ -146,7 +146,7 @@ def full(
     Create a tensor filled with a specific value.
 
     Args:
-        shape: Shape of the tensor (rank 1 or 2).
+        shape: Shape of the tensor (rank 1, 2, 3, or 4).
         fill_value: Value to fill the tensor with.
         requires_grad: Whether to track gradients.
 
@@ -191,14 +191,14 @@ def zero_grad(params: list[Tensor]) -> None:
 
     For each parameter:
     - If grad is None, allocate a zero-filled gradient tensor
-    - If grad exists, fill it with zeros using Triton kernel
+    - If grad exists, zero it with cudaMemset (faster than many small Triton kernels)
 
     This should be called before loss.backward() in training loops.
 
     Args:
         params: List of parameter tensors to zero gradients for.
     """
-    from .kernels.optim_kernels import fill_kernel
+    from .cuda_mem import cuda_memset
 
     for p in params:
         if not p.requires_grad:
@@ -208,9 +208,8 @@ def zero_grad(params: list[Tensor]) -> None:
             # Allocate zero-initialized gradient
             p.grad = zeros(p._shape)
         else:
-            # Fill existing gradient with zeros
-            grid = lambda meta: (triton.cdiv(p.grad._numel, meta["BLOCK"]),)
-            fill_kernel[grid](p.grad._ptr, 0.0, p.grad._numel, BLOCK=256)
+            # Zero existing gradient with cudaMemset (byte 0)
+            cuda_memset(p.grad._ptr, 0, p.grad._nbytes)
 
 
 def sgd_step(params: list[Tensor], lr: float) -> None:

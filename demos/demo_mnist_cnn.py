@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """
-Gradtuity MNIST Demo (MLP)
+Gradtuity MNIST CNN Demo
 
-This script demonstrates training an MLP on the MNIST handwritten digit dataset
+This script demonstrates training a CNN on the MNIST handwritten digit dataset
 using Gradtuity's from-scratch tensor autodiff engine with Triton GPU kernels.
 
-Architecture: 784 -> 128 -> 64 -> 10 (flattened input)
+Architecture: CNN (Conv -> ReLU -> Pool -> Conv -> ReLU -> Pool -> Flatten -> Linear -> ReLU -> Linear)
+Input: (N, 1, 28, 28). Output: (N, 10).
 Loss: MSE with one-hot encoded targets (+1 for correct class, -1 for others)
 
 Usage:
-    uv run python demos/demo_mnist.py
-
-For the CNN demo, run: uv run python demos/demo_mnist_cnn.py
+    uv run python demos/demo_mnist_cnn.py
 """
 
 import os
@@ -26,18 +25,19 @@ import numpy as np
 from sklearn.datasets import fetch_openml
 from sklearn.model_selection import train_test_split
 
-from gradtuity import MLP, Tensor, sgd_step
+from gradtuity import CNN, Tensor, sgd_step
 
-# Create plots directory
+# Create plots directory (CNN-specific subdir or prefix)
 PLOT_DIR = os.path.join(os.path.dirname(__file__), "plots")
 os.makedirs(PLOT_DIR, exist_ok=True)
+PLOT_PREFIX = "mnist_cnn_"  # e.g. mnist_cnn_1_samples.png
 
 # Set seeds for reproducibility
 np.random.seed(42)
 random.seed(42)
 
 print("=" * 60)
-print("Gradtuity MNIST Demo (MLP)")
+print("Gradtuity MNIST CNN Demo")
 print("=" * 60)
 print()
 
@@ -47,15 +47,10 @@ print()
 print("Loading MNIST dataset...")
 start_time = time.time()
 
-# Fetch MNIST from OpenML (cached after first download)
 mnist = fetch_openml("mnist_784", version=1, as_frame=False, parser="auto")
 X_all, y_all = mnist.data, mnist.target.astype(int)
-
-# Normalize pixel values to [0, 1]
 X_all = X_all / 255.0
 
-# Use a subset for faster training (full MNIST is 70K samples)
-# For demo purposes, use 10K train + 2K test
 X_train, X_test, y_train, y_test = train_test_split(
     X_all, y_all, train_size=60000, test_size=10000, random_state=42, stratify=y_all
 )
@@ -63,7 +58,7 @@ X_train, X_test, y_train, y_test = train_test_split(
 print(f"Loaded in {time.time() - start_time:.1f}s")
 print(f"Training samples: {len(X_train)}")
 print(f"Test samples: {len(X_test)}")
-print(f"Input features: {X_train.shape[1]}")
+print(f"Input shape for CNN: (batch, 1, 28, 28)")
 print(f"Classes: 0-9 (10 digits)")
 print()
 
@@ -73,20 +68,19 @@ for i, ax in enumerate(axes.flat):
     ax.imshow(X_train[i].reshape(28, 28), cmap="gray")
     ax.set_title(f"Label: {y_train[i]}")
     ax.axis("off")
-plt.suptitle("Sample MNIST Images")
+plt.suptitle("Sample MNIST Images (CNN Demo)")
 plt.tight_layout()
-plt.savefig(os.path.join(PLOT_DIR, "mnist_1_samples.png"), dpi=150)
+plt.savefig(os.path.join(PLOT_DIR, f"{PLOT_PREFIX}1_samples.png"), dpi=150)
 plt.close()
-print(f"Saved: {PLOT_DIR}/mnist_1_samples.png")
+print(f"Saved: {PLOT_DIR}/{PLOT_PREFIX}1_samples.png")
 
 # -----------------------------------------------------------------------------
 # Create Model
 # -----------------------------------------------------------------------------
 print()
-print("Creating model...")
+print("Creating CNN model...")
 
-# MLP: 784 -> 128 -> 64 -> 10
-model = MLP(784, [128, 64, 10])
+model = CNN()
 print(model)
 num_params = sum(p.numel for p in model.parameters())
 print(f"Number of parameters: {num_params:,}")
@@ -95,19 +89,12 @@ print()
 # -----------------------------------------------------------------------------
 # Training Setup
 # -----------------------------------------------------------------------------
-
-# Hyperparameters
 BATCH_SIZE = 64
 NUM_EPOCHS = 15
 INITIAL_LR = 0.01
 
 
 def create_one_hot(labels, num_classes=10):
-    """
-    Create one-hot encoded targets with +1 for correct class, -1 for others.
-
-    This encoding works well with MSE loss for classification.
-    """
     targets = []
     for label in labels:
         row = [-1.0] * num_classes
@@ -117,28 +104,26 @@ def create_one_hot(labels, num_classes=10):
 
 
 # -----------------------------------------------------------------------------
-# Pre-convert data to Tensors (avoids conversion overhead during training)
+# Pre-convert data to Tensors (4D for CNN)
 # -----------------------------------------------------------------------------
-print("Pre-converting data to Tensors...")
+print("Pre-converting data to Tensors (4D for CNN)...")
 preconv_start = time.time()
 
-# Pre-create training batches as Tensors
 num_train_batches = len(X_train) // BATCH_SIZE
 train_X_batches = []
 train_Y_batches = []
-train_Y_labels = []  # Keep numpy labels for accuracy calculation
+train_Y_labels = []
 
 for i in range(num_train_batches):
     start_idx = i * BATCH_SIZE
     end_idx = start_idx + BATCH_SIZE
-    
     X_batch_np = X_train[start_idx:end_idx]
     y_batch_np = y_train[start_idx:end_idx]
-    train_X_batches.append(Tensor(X_batch_np.tolist()))
+    X_batch_4d = X_batch_np.reshape(-1, 1, 28, 28)
+    train_X_batches.append(Tensor(X_batch_4d.tolist()))
     train_Y_batches.append(Tensor(create_one_hot(y_batch_np)))
     train_Y_labels.append(y_batch_np)
 
-# Pre-create test batches as Tensors
 TEST_BATCH_SIZE = 256
 num_test_batches = (len(X_test) + TEST_BATCH_SIZE - 1) // TEST_BATCH_SIZE
 test_X_batches = []
@@ -147,10 +132,10 @@ test_Y_labels = []
 for i in range(num_test_batches):
     start_idx = i * TEST_BATCH_SIZE
     end_idx = min(start_idx + TEST_BATCH_SIZE, len(X_test))
-    
     X_batch_np = X_test[start_idx:end_idx]
     y_batch_np = y_test[start_idx:end_idx]
-    test_X_batches.append(Tensor(X_batch_np.tolist()))
+    X_batch_4d = X_batch_np.reshape(-1, 1, 28, 28)
+    test_X_batches.append(Tensor(X_batch_4d.tolist()))
     test_Y_labels.append(y_batch_np)
 
 print(f"Pre-converted {num_train_batches} train batches + {num_test_batches} test batches in {time.time() - preconv_start:.1f}s")
@@ -158,21 +143,14 @@ print()
 
 
 def evaluate_preconverted():
-    """Evaluate model on pre-converted test data."""
     total_correct = 0
     total_samples = 0
-
     for X_tensor, y_labels in zip(test_X_batches, test_Y_labels):
-        # Forward pass (no conversion needed!)
         scores = model(X_tensor)
-
-        # Compute predictions using GPU argmax
         pred_indices = scores.argmax(dim=1)
         predictions = np.array(pred_indices.to_list(), dtype=int)
-
         total_correct += (predictions == y_labels).sum()
         total_samples += len(y_labels)
-
     return total_correct / total_samples
 
 
@@ -185,78 +163,57 @@ print("-" * 60)
 train_losses = []
 train_accuracies = []
 test_accuracies = []
-
-# Timing accumulators
 TIMING_DEBUG = True
-
 start_time = time.time()
 
 for epoch in range(NUM_EPOCHS):
     epoch_start = time.time()
-
-    # Reset timing accumulators for this epoch
     time_forward = 0.0
     time_loss_calc = 0.0
     time_zero_grad = 0.0
     time_backward = 0.0
     time_sgd = 0.0
     time_accuracy = 0.0
-
-    # Shuffle batch order (not individual samples, since data is pre-batched)
     batch_indices = np.random.permutation(num_train_batches)
-
-    # Learning rate decay
     lr = INITIAL_LR * (1.0 - 0.5 * epoch / NUM_EPOCHS)
-
     epoch_loss = 0.0
     epoch_acc = 0.0
 
     for batch_idx in batch_indices:
-        # Get pre-converted batch (no conversion needed!)
         X_tensor = train_X_batches[batch_idx]
         y_onehot = train_Y_batches[batch_idx]
         y_labels = train_Y_labels[batch_idx]
 
-        # --- Forward pass ---
         t0 = time.perf_counter()
         scores = model(X_tensor)
         time_forward += time.perf_counter() - t0
 
-        # --- Loss calculation (fused MSE) ---
         t0 = time.perf_counter()
         loss = scores.mse_loss(y_onehot)
         time_loss_calc += time.perf_counter() - t0
-
         epoch_loss += loss.item()
 
-        # --- Accuracy calculation (GPU argmax) ---
         t0 = time.perf_counter()
-        pred_indices = scores.argmax(dim=1)  # GPU argmax
-        predictions = np.array(pred_indices.to_list(), dtype=int)  # Only 64 values transferred
+        pred_indices = scores.argmax(dim=1)
+        predictions = np.array(pred_indices.to_list(), dtype=int)
         acc = (predictions == y_labels).mean()
         epoch_acc += acc
         time_accuracy += time.perf_counter() - t0
 
-        # --- Zero grad ---
         t0 = time.perf_counter()
         model.zero_grad()
         time_zero_grad += time.perf_counter() - t0
 
-        # --- Backward pass ---
         t0 = time.perf_counter()
         loss.backward()
         time_backward += time.perf_counter() - t0
 
-        # --- SGD update ---
         t0 = time.perf_counter()
         sgd_step(model.parameters(), lr=lr)
         time_sgd += time.perf_counter() - t0
 
-    # Average metrics
     avg_loss = epoch_loss / num_train_batches
     avg_acc = epoch_acc / num_train_batches
-
-    # --- Test evaluation timing ---
     t0 = time.perf_counter()
     test_acc = evaluate_preconverted()
     time_eval = time.perf_counter() - t0
@@ -264,7 +221,6 @@ for epoch in range(NUM_EPOCHS):
     train_losses.append(avg_loss)
     train_accuracies.append(avg_acc)
     test_accuracies.append(test_acc)
-
     epoch_time = time.time() - epoch_start
     print(
         f"Epoch {epoch + 1:2d}/{NUM_EPOCHS} | "
@@ -274,7 +230,6 @@ for epoch in range(NUM_EPOCHS):
         f"LR: {lr:.4f} | "
         f"Time: {epoch_time:.1f}s"
     )
-
     if TIMING_DEBUG:
         total_train = time_forward + time_loss_calc + time_zero_grad + time_backward + time_sgd + time_accuracy
         print(f"  Timing breakdown (train loop {total_train:.2f}s + eval {time_eval:.2f}s):")
@@ -297,7 +252,6 @@ print("Final Evaluation:")
 
 
 def evaluate_train_preconverted():
-    """Evaluate model on pre-converted training data."""
     total_correct = 0
     total_samples = 0
     for X_tensor, y_labels in zip(train_X_batches, train_Y_labels):
@@ -318,83 +272,61 @@ print()
 # -----------------------------------------------------------------------------
 # Visualization
 # -----------------------------------------------------------------------------
-
-# Plot training curves
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
-
 ax1.plot(range(1, NUM_EPOCHS + 1), train_losses, "b-", linewidth=2)
 ax1.set_xlabel("Epoch")
 ax1.set_ylabel("Loss")
-ax1.set_title("Training Loss")
+ax1.set_title("Training Loss (CNN)")
 ax1.grid(True, alpha=0.3)
-
-ax2.plot(
-    range(1, NUM_EPOCHS + 1),
-    [a * 100 for a in train_accuracies],
-    "b-",
-    linewidth=2,
-    label="Train",
-)
-ax2.plot(
-    range(1, NUM_EPOCHS + 1),
-    [a * 100 for a in test_accuracies],
-    "r-",
-    linewidth=2,
-    label="Test",
-)
+ax2.plot(range(1, NUM_EPOCHS + 1), [a * 100 for a in train_accuracies], "b-", linewidth=2, label="Train")
+ax2.plot(range(1, NUM_EPOCHS + 1), [a * 100 for a in test_accuracies], "r-", linewidth=2, label="Test")
 ax2.set_xlabel("Epoch")
 ax2.set_ylabel("Accuracy (%)")
-ax2.set_title("Training and Test Accuracy")
+ax2.set_title("Training and Test Accuracy (CNN)")
 ax2.legend()
 ax2.grid(True, alpha=0.3)
-
 plt.tight_layout()
-plt.savefig(os.path.join(PLOT_DIR, "mnist_2_training.png"), dpi=150)
+plt.savefig(os.path.join(PLOT_DIR, f"{PLOT_PREFIX}2_training.png"), dpi=150)
 plt.close()
-print(f"Saved: {PLOT_DIR}/mnist_2_training.png")
+print(f"Saved: {PLOT_DIR}/{PLOT_PREFIX}2_training.png")
 
-# Visualize predictions on test samples
+# Sample predictions (4D input for CNN)
 fig, axes = plt.subplots(3, 5, figsize=(12, 8))
-
-# Get predictions for first 15 test samples (MLP: flattened input)
 X_sample = X_test[:15]
 y_sample = y_test[:15]
-X_tensor = Tensor(X_sample.tolist())
+X_sample_4d = X_sample.reshape(-1, 1, 28, 28)
+X_tensor = Tensor(X_sample_4d.tolist())
 scores = model(X_tensor)
 pred_indices = scores.argmax(dim=1)
 predictions = np.array(pred_indices.to_list(), dtype=int)
-
 for i, ax in enumerate(axes.flat):
     ax.imshow(X_sample[i].reshape(28, 28), cmap="gray")
     color = "green" if predictions[i] == y_sample[i] else "red"
     ax.set_title(f"Pred: {predictions[i]} (True: {y_sample[i]})", color=color)
     ax.axis("off")
-
-plt.suptitle(f"Sample Predictions (Test Accuracy: {final_test_acc * 100:.1f}%)")
+plt.suptitle(f"Sample Predictions CNN (Test Accuracy: {final_test_acc * 100:.1f}%)")
 plt.tight_layout()
-plt.savefig(os.path.join(PLOT_DIR, "mnist_3_predictions.png"), dpi=150)
+plt.savefig(os.path.join(PLOT_DIR, f"{PLOT_PREFIX}3_predictions.png"), dpi=150)
 plt.close()
-print(f"Saved: {PLOT_DIR}/mnist_3_predictions.png")
+print(f"Saved: {PLOT_DIR}/{PLOT_PREFIX}3_predictions.png")
 
-# Confusion matrix visualization (simplified)
 print()
-print("Per-class accuracy:")
+print("Per-class accuracy (CNN):")
 for digit in range(10):
     mask = y_test == digit
     if mask.sum() > 0:
         X_digit = X_test[mask]
         y_digit = y_test[mask]
-
-        X_tensor = Tensor(X_digit.tolist())  # (n, 784) for MLP
+        X_digit_4d = X_digit.reshape(-1, 1, 28, 28)
+        X_tensor = Tensor(X_digit_4d.tolist())
         scores = model(X_tensor)
         pred_indices = scores.argmax(dim=1)
         preds = np.array(pred_indices.to_list(), dtype=int)
-
         acc = (preds == y_digit).mean()
         print(f"  Digit {digit}: {acc * 100:.1f}% ({mask.sum()} samples)")
 
 print()
 print("=" * 60)
-print("Demo complete!")
+print("CNN demo complete!")
 print(f"Final test accuracy: {final_test_acc * 100:.2f}%")
 print("=" * 60)

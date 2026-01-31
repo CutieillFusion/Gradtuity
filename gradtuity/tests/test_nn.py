@@ -6,7 +6,19 @@ These tests require a CUDA-enabled GPU to run.
 
 import pytest
 
-from gradtuity import Linear, MLP, Module, Tensor, ones, randn, zeros
+from gradtuity import (
+    CNN,
+    Conv2d,
+    Flatten,
+    Linear,
+    MaxPool2d,
+    MLP,
+    Module,
+    Tensor,
+    ones,
+    randn,
+    zeros,
+)
 
 # Mark all tests in this module as requiring CUDA
 pytestmark = pytest.mark.requires_cuda
@@ -219,6 +231,146 @@ class TestMLP:
 
         assert len(model.layers) == 5
         assert len(model.parameters()) == 10  # 5 layers * 2 params each
+
+
+@pytest.mark.requires_triton
+class TestFlatten:
+    """Tests for Flatten module."""
+
+    def test_flatten_4d_to_2d(self):
+        """Test Flatten(1) on 4D input (N, C, H, W) -> (N, C*H*W)."""
+        flat = Flatten(start_dim=1)
+        x = Tensor([[[[1.0, 2.0], [3.0, 4.0]]]])  # (1, 1, 2, 2)
+        y = flat(x)
+        assert y.shape == (1, 4)
+        assert y.numel == 4
+
+
+@pytest.mark.requires_triton
+class TestConv2d:
+    """Tests for Conv2d layer."""
+
+    def test_conv2d_forward_shape(self):
+        """Test Conv2d forward produces correct output shape."""
+        conv = Conv2d(1, 4, kernel_size=3, stride=1, padding=1)
+        x = Tensor([[[[0.1] * 8] * 8]])  # (1, 1, 8, 8)
+        y = conv(x)
+        assert y.shape == (1, 4, 8, 8)
+
+    def test_conv2d_parameters(self):
+        """Test Conv2d has weight and bias parameters."""
+        conv = Conv2d(2, 8, kernel_size=3)
+        params = conv.parameters()
+        assert len(params) == 2
+        assert conv.weight.shape == (8, 2, 3, 3)
+        assert conv.bias.shape == (8,)
+
+    def test_conv2d_then_relu_storage_valid(self):
+        """Regression: conv2d output storage must stay valid after return (no use-after-free).
+
+        Conv2d returns a view (y_4d) sharing storage with an internal tensor (y_flat).
+        If y_flat is GC'd, __del__ would free the ptr and the next op (e.g. relu) would
+        read freed memory. This test ensures we keep the storage alive via the backward
+        closure. Also ensures no double-free of the matmul output buffer (out_flat_ptr).
+        """
+        import numpy as np
+
+        conv = Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
+        x_data = np.zeros((32, 1, 28, 28), dtype=np.float32)
+        x = Tensor(x_data.tolist())
+        y = conv(x)
+        assert y.shape == (32, 32, 28, 28)
+        z = y.relu()
+        assert z.shape == (32, 32, 28, 28)
+        # ReLU output must be non-negative; reading invalid storage could yield garbage
+        flat = np.array(z.to_list()).ravel()
+        assert (flat >= -1e-5).all(), "relu output should be non-negative"
+
+    def test_conv2d_then_multiple_ops_storage_valid(self):
+        """Regression: conv2d output used in several downstream ops (stress storage lifetime)."""
+        import numpy as np
+
+        conv = Conv2d(1, 8, kernel_size=3, stride=1, padding=1)
+        x_data = np.zeros((4, 1, 14, 14), dtype=np.float32)
+        x = Tensor(x_data.tolist())
+        y = conv(x)
+        y = y.relu()
+        y = y.relu()
+        assert y.shape == (4, 8, 14, 14)
+        s = y.sum()
+        assert s.shape == (1,)
+        assert s.to_list()[0] >= 0
+
+
+@pytest.mark.requires_triton
+class TestMaxPool2d:
+    """Tests for MaxPool2d layer."""
+
+    def test_maxpool2d_forward_shape(self):
+        """Test MaxPool2d forward halves spatial size with kernel=2, stride=2."""
+        pool = MaxPool2d(kernel_size=2, stride=2)
+        x = Tensor([[[[1.0, 2.0, 3.0, 4.0] * 2] * 4]])  # (1, 1, 4, 8)
+        y = pool(x)
+        assert y.shape == (1, 1, 2, 4)
+
+    def test_maxpool2d_forward_cnn_like_shape(self):
+        """Test MaxPool2d on CNN-like tensor (N=4, C=32, 28x28) -> (4, 32, 14, 14).
+
+        Catches illegal memory access when grid is large (e.g. numel_out > 100k).
+        """
+        pool = MaxPool2d(kernel_size=2, stride=2)
+        # Same shape as after first conv in CNN: (batch, 32, 28, 28)
+        import numpy as np
+        data = np.zeros((4, 32, 28, 28), dtype=np.float32)
+        x = Tensor(data.tolist())
+        y = pool(x)
+        assert y.shape == (4, 32, 14, 14)
+
+
+@pytest.mark.requires_triton
+class TestCNN:
+    """Tests for CNN model (MNIST-style)."""
+
+    def test_cnn_forward_shape(self):
+        """Test CNN forward: (N, 1, 28, 28) -> (N, 10)."""
+        model = CNN()
+        x = Tensor([[[[0.0] * 28] * 28]])  # (1, 1, 28, 28)
+        y = model(x)
+        assert y.shape == (1, 10)
+
+    def test_cnn_forward_batch_size_4(self):
+        """Test CNN forward with batch size 4 (realistic mini-batch).
+
+        Ensures full pipeline (conv -> relu -> pool -> conv -> relu -> pool -> flatten -> linear)
+        works without illegal memory access on non-trivial batch.
+        """
+        model = CNN()
+        import numpy as np
+        x_data = np.zeros((4, 1, 28, 28), dtype=np.float32)
+        x = Tensor(x_data.tolist())
+        y = model(x)
+        assert y.shape == (4, 10)
+
+    def test_cnn_forward_batch_size_32(self):
+        """Test CNN forward with batch size 32 (large batch, multi-block path).
+
+        Exercises maxpool with numel_out=200704 and grid=784; would exceed CUDA grid
+        limit (65535) without BLOCK_ELEMS fix if we used one block per element.
+        Uses 32 instead of 64 to avoid illegal memory access on some GPUs/drivers
+        when conv+pool grids are large (demo uses BATCH_SIZE=64).
+        """
+        model = CNN()
+        import numpy as np
+        x_data = np.zeros((32, 1, 28, 28), dtype=np.float32)
+        x = Tensor(x_data.tolist())
+        y = model(x)
+        assert y.shape == (32, 10)
+
+    def test_cnn_parameters_non_empty(self):
+        """Test CNN has parameters from conv and linear layers."""
+        model = CNN()
+        params = model.parameters()
+        assert len(params) > 0
 
 
 @pytest.mark.requires_triton

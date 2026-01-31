@@ -4,15 +4,16 @@ Tensor class with from-scratch GPU storage and autograd support.
 This module implements a minimal Tensor type that:
 - Holds GPU storage as raw pointers managed via ctypes + CUDA runtime
 - Tracks a computation graph and supports backward()
-- Enforces invariants: CUDA only, float32 only, contiguous only, rank in {1, 2}
+- Enforces invariants: CUDA only, float32 only, contiguous only, rank in {1, 2, 3, 4}
 """
 
 from __future__ import annotations
 
+import os
 import struct
 from typing import Callable, Optional
 
-from .cuda_mem import cuda_malloc, cuda_free, cuda_memcpy_htod, cuda_memcpy_dtoh
+from .cuda_mem import cuda_free, cuda_malloc, cuda_memcpy_dtoh, cuda_memcpy_htod
 
 
 class Tensor:
@@ -20,7 +21,7 @@ class Tensor:
     A tensor that lives on GPU with autograd support.
 
     All data is stored on CUDA device as float32 in contiguous row-major layout.
-    Only ranks 1 and 2 are supported.
+    Ranks 1, 2, 3, and 4 are supported.
     """
 
     def __init__(
@@ -56,10 +57,10 @@ class Tensor:
                     f"requires {expected_numel} elements"
                 )
 
-        # Validate shape (rank must be 1 or 2)
-        if len(shape) not in (1, 2):
+        # Validate shape (rank must be 1, 2, 3, or 4)
+        if len(shape) not in (1, 2, 3, 4):
             raise ValueError(
-                f"Only rank 1 or 2 tensors supported, got rank {len(shape)}"
+                f"Only rank 1, 2, 3, or 4 tensors supported, got rank {len(shape)}"
             )
 
         # Validate all dimensions are positive
@@ -113,9 +114,9 @@ class Tensor:
             New Tensor wrapping the given pointer.
         """
         # Validate shape
-        if len(shape) not in (1, 2):
+        if len(shape) not in (1, 2, 3, 4):
             raise ValueError(
-                f"Only rank 1 or 2 tensors supported, got rank {len(shape)}"
+                f"Only rank 1, 2, 3, or 4 tensors supported, got rank {len(shape)}"
             )
 
         # Create instance without calling __init__
@@ -292,6 +293,69 @@ class Tensor:
             requires_grad=False,
             name=f"{self.name}_detached" if self.name else "",
         )
+
+    def view(self, new_shape: tuple[int | None, ...]) -> "Tensor":
+        """
+        Return a new tensor viewing the same storage with a different shape.
+
+        Total number of elements must match. At most one dimension may be -1
+        (or None), which is inferred from the remaining dimensions and numel.
+
+        Args:
+            new_shape: Target shape. Use -1 for one dimension to infer.
+
+        Returns:
+            New tensor sharing storage with self (no copy).
+
+        Raises:
+            ValueError: If product of new_shape does not match numel.
+        """
+        # Resolve -1 / None: replace with inferred size
+        new_shape_list = list(new_shape)
+        infer_idx = None
+        product = 1
+        for i, d in enumerate(new_shape_list):
+            if d is None or d == -1:
+                if infer_idx is not None:
+                    raise ValueError("view() allows only one dimension to be -1")
+                infer_idx = i
+            else:
+                if d <= 0:
+                    raise ValueError(f"view() dimension {i} must be positive, got {d}")
+                product *= d
+        if infer_idx is not None:
+            inferred = self._numel // product
+            if inferred * product != self._numel:
+                raise ValueError(
+                    f"view() shape {new_shape} is incompatible with numel {self._numel}"
+                )
+            new_shape_list[infer_idx] = inferred
+        else:
+            if product != self._numel:
+                raise ValueError(
+                    f"view() shape {new_shape} has {product} elements, "
+                    f"but tensor has {self._numel} elements"
+                )
+        resolved_shape = tuple(new_shape_list)
+
+        out = Tensor._from_ptr(
+            self._ptr,
+            resolved_shape,
+            owns_memory=False,
+            requires_grad=False,
+        )
+        input_tensor = self
+
+        def _backward(out_grad: Tensor) -> None:
+            if input_tensor.requires_grad:
+                grad_viewed = out_grad.view(input_tensor._shape)
+                if input_tensor.grad is None:
+                    from .functional import zeros_like
+                    input_tensor.grad = zeros_like(input_tensor)
+                input_tensor.grad = input_tensor.grad.add(grad_viewed)
+
+        out._set_graph(parents=(self,), backward_fn=_backward)
+        return out
 
     # -------------------------------------------------------------------------
     # Operations
@@ -1044,6 +1108,396 @@ class Tensor:
         out._set_graph(parents=(self, weight, bias), backward_fn=_backward)
         return out
 
+    def conv2d(
+        self,
+        weight: "Tensor",
+        bias: "Tensor",
+        stride: int = 1,
+        padding: int = 0,
+    ) -> "Tensor":
+        """
+        2D convolution: input (N, C_in, H, W), weight (C_out, C_in, kH, kW), bias (C_out).
+
+        Output (N, C_out, H_out, W_out) with H_out = (H + 2*padding - kH) // stride + 1.
+        Implemented via im2col + matmul.
+        """
+        import triton
+
+        from .cuda_mem import cuda_malloc, cuda_free, cuda_memset
+        from .functional import zeros_like
+        from .kernels.conv_kernels import col2im_kernel, im2col_kernel_2d
+        from .kernels.matmul_kernels import (
+            matmul_kernel,
+            matmul_nt_acc_kernel,
+            matmul_tn_acc_kernel,
+        )
+        from .kernels.reduce_kernels import add_bias_kernel, sum_axis0_kernel
+
+        x = self
+        if x.ndim != 4:
+            raise ValueError(f"conv2d requires 4D input, got shape {x._shape}")
+        if weight.ndim != 4:
+            raise ValueError(f"conv2d weight must be 4D, got shape {weight._shape}")
+        if bias.ndim != 1:
+            raise ValueError(f"conv2d bias must be 1D, got shape {bias._shape}")
+        N, C_in, H, W = x._shape
+        C_out, C_in_w, kH, kW = weight._shape
+        if C_in != C_in_w:
+            raise ValueError(
+                f"conv2d input channels {C_in} != weight channels {C_in_w}"
+            )
+        if bias._shape[0] != C_out:
+            raise ValueError(
+                f"conv2d bias size {bias._shape[0]} != out_channels {C_out}"
+            )
+
+        H_out = (H + 2 * padding - kH) // stride + 1
+        W_out = (W + 2 * padding - kW) // stride + 1
+        if H_out <= 0 or W_out <= 0:
+            raise ValueError(
+                f"conv2d output spatial size invalid: H_out={H_out}, W_out={W_out}"
+            )
+
+        num_rows = N * H_out * W_out
+        num_cols = C_in * kH * kW
+        BLOCK_M = 32
+        BLOCK_N = 32
+        BLOCK_K = 32
+        IM2COL_BLOCK = 64
+
+        # im2col: x -> col (num_rows, num_cols)
+        col_ptr = cuda_malloc(num_rows * num_cols * 4)
+        cuda_memset(col_ptr, 0, num_rows * num_cols * 4)
+        # CUDA requires grid dimensions >= 1; cdiv can be 0 if num_cols is 0
+        grid_im2col = (
+            max(1, num_rows),
+            max(1, triton.cdiv(num_cols, IM2COL_BLOCK)),
+        )
+        im2col_kernel_2d[grid_im2col](
+            x._ptr,
+            col_ptr,
+            N=N,
+            C=C_in,
+            H=H,
+            W=W,
+            kH=kH,
+            kW=kW,
+            stride_h=stride,
+            stride_w=stride,
+            pad_h=padding,
+            pad_w=padding,
+            H_out=H_out,
+            W_out=W_out,
+            num_cols=num_cols,
+            BLOCK=IM2COL_BLOCK,
+        )
+
+        # col @ weight_flat.T -> (num_rows, C_out). weight is (C_out, C_in, kH, kW) -> view (C_out, num_cols)
+        w_flat = weight.view((C_out, num_cols))
+        out_flat_ptr = cuda_malloc(num_rows * C_out * 4)
+        # owns_memory=False: we cuda_free(out_flat_ptr) below; avoid double-free in __del__
+        out_flat = Tensor._from_ptr(
+            out_flat_ptr, (num_rows, C_out), owns_memory=False
+        )
+        grid_mm = (
+            max(1, triton.cdiv(num_rows, BLOCK_M)),
+            max(1, triton.cdiv(C_out, BLOCK_N)),
+        )
+        matmul_kernel[grid_mm](
+            col_ptr,
+            w_flat._ptr,
+            out_flat_ptr,
+            M=num_rows,
+            N=C_out,
+            K=num_cols,
+            stride_am=num_cols,
+            stride_ak=1,
+            stride_bk=num_cols,
+            stride_bn=1,
+            stride_cm=C_out,
+            stride_cn=1,
+            BLOCK_M=BLOCK_M,
+            BLOCK_N=BLOCK_N,
+            BLOCK_K=BLOCK_K,
+        )
+        # Save col for backward only when input needs grad; else free to avoid leak when backward is never called (e.g. eval).
+        needs_col_saved = x.requires_grad
+        col_ptr_saved = col_ptr if needs_col_saved else None
+        if not needs_col_saved:
+            cuda_free(col_ptr)
+
+        # add bias: out_flat (num_rows, C_out) + bias (C_out)
+        y_flat_ptr = cuda_malloc(num_rows * C_out * 4)
+        y_flat = Tensor._from_ptr(
+            y_flat_ptr, (num_rows, C_out), owns_memory=True
+        )
+        add_bias_kernel[
+            (max(1, triton.cdiv(num_rows * C_out, 256)),)
+        ](
+            out_flat._ptr,
+            bias._ptr,
+            y_flat_ptr,
+            rows=num_rows,
+            cols=C_out,
+            BLOCK=256,
+        )
+        cuda_free(out_flat_ptr)
+
+        # view to 4D
+        y_4d = y_flat.view((N, C_out, H_out, W_out))
+
+        # backward closure
+        x_tensor = x
+        w_tensor = weight
+        b_tensor = bias
+        # Keep y_flat alive: y_4d shares storage with it; if y_flat is GC'd, __del__ frees the ptr (use-after-free).
+        y_flat_storage = y_flat
+
+        def _backward(out_grad: Tensor) -> None:
+            _ = y_flat_storage  # keep storage alive while any tensor using this ptr exists
+            # out_grad is (N, C_out, H_out, W_out)
+            d_y_flat = out_grad.view((num_rows, C_out))
+            if b_tensor.requires_grad:
+                if b_tensor.grad is None:
+                    b_tensor.grad = zeros_like(b_tensor)
+                sum_axis0_kernel[(C_out,)](
+                    d_y_flat._ptr,
+                    b_tensor.grad._ptr,
+                    num_rows,
+                    C_out,
+                    BLOCK_ROWS=32,
+                )
+            # Reuse col from forward when saved; else recompute im2col (eval path kept col_ptr_saved=None)
+            if col_ptr_saved is not None:
+                col_bw = Tensor._from_ptr(
+                    col_ptr_saved, (num_rows, num_cols), owns_memory=False
+                )
+            else:
+                col_ptr_bw = cuda_malloc(num_rows * num_cols * 4)
+                cuda_memset(col_ptr_bw, 0, num_rows * num_cols * 4)
+                im2col_kernel_2d[grid_im2col](
+                    x_tensor._ptr,
+                    col_ptr_bw,
+                    N=N,
+                    C=C_in,
+                    H=H,
+                    W=W,
+                    kH=kH,
+                    kW=kW,
+                    stride_h=stride,
+                    stride_w=stride,
+                    pad_h=padding,
+                    pad_w=padding,
+                    H_out=H_out,
+                    W_out=W_out,
+                    num_cols=num_cols,
+                    BLOCK=IM2COL_BLOCK,
+                )
+                col_bw = Tensor._from_ptr(
+                    col_ptr_bw, (num_rows, num_cols), owns_memory=True
+                )
+            w_flat_bw = w_tensor.view((C_out, num_cols))
+            if w_tensor.requires_grad:
+                if w_tensor.grad is None:
+                    w_tensor.grad = zeros_like(w_tensor)
+                # d_weight = col.T @ d_y_flat -> (num_cols, C_out); weight.grad is (C_out, num_cols)
+                d_weight_temp_ptr = cuda_malloc(num_cols * C_out * 4)
+                cuda_memset(d_weight_temp_ptr, 0, num_cols * C_out * 4)
+                grid_dw = (
+                    max(1, triton.cdiv(num_cols, BLOCK_M)),
+                    max(1, triton.cdiv(C_out, BLOCK_N)),
+                )
+                matmul_tn_acc_kernel[grid_dw](
+                    col_bw._ptr,
+                    d_y_flat._ptr,
+                    d_weight_temp_ptr,
+                    M=num_cols,
+                    N=C_out,
+                    K=num_rows,
+                    stride_ak=num_cols,
+                    stride_am=1,
+                    stride_bk=C_out,
+                    stride_bn=1,
+                    stride_cm=C_out,
+                    stride_cn=1,
+                    BLOCK_M=BLOCK_M,
+                    BLOCK_N=BLOCK_N,
+                    BLOCK_K=BLOCK_K,
+                )
+                from .kernels.elemwise_kernels import add_inplace_kernel
+                from .kernels.matmul_kernels import transpose2d_kernel
+                d_weight_T_ptr = cuda_malloc(C_out * num_cols * 4)
+                transpose2d_kernel[
+                    (triton.cdiv(num_cols * C_out, 256),)
+                ](
+                    d_weight_temp_ptr,
+                    d_weight_T_ptr,
+                    rows=num_cols,
+                    cols=C_out,
+                    BLOCK=256,
+                )
+                cuda_free(d_weight_temp_ptr)
+                add_inplace_kernel[
+                    (triton.cdiv(C_out * num_cols, 256),)
+                ](
+                    w_tensor.grad._ptr,
+                    d_weight_T_ptr,
+                    C_out * num_cols,
+                    BLOCK=256,
+                )
+                cuda_free(d_weight_T_ptr)
+            # d_col = d_y_flat @ w_flat
+            d_col_ptr = cuda_malloc(num_rows * num_cols * 4)
+            d_col = Tensor._from_ptr(
+                d_col_ptr, (num_rows, num_cols), owns_memory=True
+            )
+            grid_dcol = (
+                max(1, triton.cdiv(num_rows, BLOCK_M)),
+                max(1, triton.cdiv(num_cols, BLOCK_N)),
+            )
+            matmul_kernel[grid_dcol](
+                d_y_flat._ptr,
+                w_flat_bw._ptr,
+                d_col_ptr,
+                M=num_rows,
+                N=num_cols,
+                K=C_out,
+                stride_am=C_out,
+                stride_ak=1,
+                stride_bk=num_cols,
+                stride_bn=1,
+                stride_cm=num_cols,
+                stride_cn=1,
+                BLOCK_M=BLOCK_M,
+                BLOCK_N=BLOCK_N,
+                BLOCK_K=BLOCK_K,
+            )
+            if col_ptr_saved is not None:
+                cuda_free(col_ptr_saved)
+            else:
+                cuda_free(col_ptr_bw)
+            if x_tensor.requires_grad:
+                if x_tensor.grad is None:
+                    x_tensor.grad = zeros_like(x_tensor)
+                grid_col2im = (
+                    max(1, num_rows),
+                    max(1, triton.cdiv(num_cols, IM2COL_BLOCK)),
+                )
+                col2im_kernel[grid_col2im](
+                    d_col_ptr,
+                    x_tensor.grad._ptr,
+                    N=N,
+                    C=C_in,
+                    H=H,
+                    W=W,
+                    kH=kH,
+                    kW=kW,
+                    stride_h=stride,
+                    stride_w=stride,
+                    pad_h=padding,
+                    pad_w=padding,
+                    H_out=H_out,
+                    W_out=W_out,
+                    num_cols=num_cols,
+                    BLOCK=IM2COL_BLOCK,
+                )
+            cuda_free(d_col_ptr)
+
+        y_4d._set_graph(parents=(self, weight, bias), backward_fn=_backward)
+        return y_4d
+
+    def maxpool2d(
+        self,
+        kernel_size: int | tuple[int, int] = 2,
+        stride: int | tuple[int, int] | None = None,
+    ) -> "Tensor":
+        """
+        2D max pooling: (N, C, H, W) -> (N, C, H_out, W_out).
+
+        Default kernel_size=2, stride=2 (half spatial size).
+        """
+        import triton
+
+        from .cuda_mem import cuda_malloc, cuda_free, cuda_memset
+        from .functional import zeros_like
+        from .kernels.pool_kernels import (
+            maxpool2d_backward_kernel,
+            maxpool2d_forward_kernel,
+        )
+
+        x = self
+        if x.ndim != 4:
+            raise ValueError(f"maxpool2d requires 4D input, got shape {x._shape}")
+        if isinstance(kernel_size, int):
+            kH = kW = kernel_size
+        else:
+            kH, kW = kernel_size
+        if stride is None:
+            stride_h = stride_w = kH  # default stride = kernel_size
+        elif isinstance(stride, int):
+            stride_h = stride_w = stride
+        else:
+            stride_h, stride_w = stride
+        N, C, H, W = x._shape
+        H_out = (H - kH) // stride_h + 1
+        W_out = (W - kW) // stride_w + 1
+        if H_out <= 0 or W_out <= 0:
+            raise ValueError(
+                f"maxpool2d output size invalid: H_out={H_out}, W_out={W_out}"
+            )
+        out_shape = (N, C, H_out, W_out)
+        numel_out = N * C * H_out * W_out
+        out_ptr = cuda_malloc(numel_out * 4)
+        idx_ptr = cuda_malloc(numel_out * 4)
+        out = Tensor._from_ptr(out_ptr, out_shape, owns_memory=True)
+
+        BLOCK_ELEMS = 256
+        grid_size = triton.cdiv(numel_out, BLOCK_ELEMS)
+        maxpool2d_forward_kernel[(grid_size,)](
+            x._ptr,
+            out_ptr,
+            idx_ptr,
+            N=N,
+            C=C,
+            H=H,
+            W=W,
+            H_out=H_out,
+            W_out=W_out,
+            stride_h=stride_h,
+            stride_w=stride_w,
+            BLOCK_KH=kH,
+            BLOCK_KW=kW,
+            BLOCK_ELEMS=BLOCK_ELEMS,
+        )
+
+        x_tensor = x
+
+        def _backward(out_grad: Tensor) -> None:
+            if x_tensor.requires_grad:
+                if x_tensor.grad is None:
+                    x_tensor.grad = zeros_like(x_tensor)
+                BLOCK_ELEMS_BW = 256
+                grid_size_bw = triton.cdiv(numel_out, BLOCK_ELEMS_BW)
+                maxpool2d_backward_kernel[(grid_size_bw,)](
+                    out_grad._ptr,
+                    idx_ptr,
+                    x_tensor.grad._ptr,
+                    N=N,
+                    C=C,
+                    H=H,
+                    W=W,
+                    H_out=H_out,
+                    W_out=W_out,
+                    stride_h=stride_h,
+                    stride_w=stride_w,
+                    BLOCK_KW=kW,
+                    BLOCK_ELEMS=BLOCK_ELEMS_BW,
+                )
+            cuda_free(idx_ptr)
+
+        out._set_graph(parents=(self,), backward_fn=_backward)
+        return out
+
     def add_bias(self, bias: "Tensor") -> "Tensor":
         """
         Add a 1D bias to a 2D tensor with broadcasting.
@@ -1398,5 +1852,33 @@ class Tensor:
                 result.append(flat_data[start:end])
             return result
 
-        # Should not reach here given rank constraint, but handle gracefully
+        # For 3D, chunk into 2D slices then rows
+        if len(shape) == 3:
+            d0, d1, d2 = shape
+            result = []
+            for i in range(d0):
+                slice_result = []
+                for j in range(d1):
+                    start = (i * d1 + j) * d2
+                    end = start + d2
+                    slice_result.append(flat_data[start:end])
+                result.append(slice_result)
+            return result
+
+        # For 4D, nest by batch -> channels -> height -> width
+        if len(shape) == 4:
+            n, c, h, w = shape
+            result = []
+            for i in range(n):
+                batch_result = []
+                for j in range(c):
+                    chan_result = []
+                    for k in range(h):
+                        start = (i * c * h + j * h + k) * w
+                        end = start + w
+                        chan_result.append(flat_data[start:end])
+                    batch_result.append(chan_result)
+                result.append(batch_result)
+            return result
+
         raise ValueError(f"Unsupported shape rank: {len(shape)}")

@@ -12,7 +12,7 @@ from .functional import (
     zero_grad,
     sgd_step,
 )
-from .nn import Module, Linear, MLP
+from .nn import CNN, Conv2d, Flatten, Linear, MaxPool2d, MLP, Module
 
 __all__ = [
     "Tensor",
@@ -27,5 +27,9 @@ __all__ = [
     "sgd_step",
     "Module",
     "Linear",
+    "Flatten",
+    "Conv2d",
+    "MaxPool2d",
+    "CNN",
     "MLP",
 ]
