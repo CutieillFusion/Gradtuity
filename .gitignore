@@ -88,3 +88,6 @@ Thumbs.db
 
 # Demo files
 demos/plots/
+
+# Ruff Cache
+.ruff_cache/
