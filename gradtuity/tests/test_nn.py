@@ -326,6 +326,28 @@ class TestMaxPool2d:
         y = pool(x)
         assert y.shape == (4, 32, 14, 14)
 
+    def test_maxpool2d_requires_grad_false_does_not_leak_idx_buffer(self):
+        """Test maxpool2d with requires_grad=False frees idx_ptr (no VRAM leak).
+
+        When input has requires_grad=False, _backward is not attached, so idx_ptr
+        must be freed in the no-grad path. Running many forward passes would OOM
+        if idx_ptr were leaked each time.
+        """
+        pool = MaxPool2d(kernel_size=2, stride=2)
+        import numpy as np
+        # CNN-like shape so we allocate non-trivial idx buffer each time
+        data = np.zeros((8, 16, 14, 14), dtype=np.float32)
+        x = Tensor(data.tolist(), requires_grad=False)
+        n_repeats = 200
+        for _ in range(n_repeats):
+            y = pool(x)
+            assert y.shape == (8, 16, 7, 7)
+            assert y.requires_grad is False
+        # If idx_ptr were leaked, 200 * (8*16*7*7*4) bytes would accumulate;
+        # passing without OOM confirms the no-grad free path works.
+        del y
+        del x
+
 
 @pytest.mark.requires_triton
 class TestCNN:

@@ -1496,6 +1496,8 @@ class Tensor:
             cuda_free(idx_ptr)
 
         out._set_graph(parents=(self,), backward_fn=_backward)
+        if not out.requires_grad:
+            cuda_free(idx_ptr)
         return out
 
     def add_bias(self, bias: "Tensor") -> "Tensor":
