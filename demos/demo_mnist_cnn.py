@@ -25,7 +25,7 @@ import numpy as np
 from sklearn.datasets import fetch_openml
 from sklearn.model_selection import train_test_split
 
-from gradtuity import CNN, Tensor, sgd_step
+from gradtuity import CNN, SGD, Tensor
 
 # Create plots directory (CNN-specific subdir or prefix)
 PLOT_DIR = os.path.join(os.path.dirname(__file__), "plots")
@@ -92,6 +92,8 @@ print()
 BATCH_SIZE = 64
 NUM_EPOCHS = 15
 INITIAL_LR = 0.01
+
+optimizer = SGD(model.parameters(), lr=INITIAL_LR)
 
 
 def create_one_hot(labels, num_classes=10):
@@ -170,6 +172,8 @@ start_time = time.time()
 
 for epoch in range(NUM_EPOCHS):
     epoch_start = time.time()
+    lr = INITIAL_LR * (1.0 - 0.5 * epoch / NUM_EPOCHS)
+    optimizer.lr = lr
     time_forward = 0.0
     time_loss_calc = 0.0
     time_zero_grad = 0.0
@@ -177,7 +181,6 @@ for epoch in range(NUM_EPOCHS):
     time_sgd = 0.0
     time_accuracy = 0.0
     batch_indices = np.random.permutation(num_train_batches)
-    lr = INITIAL_LR * (1.0 - 0.5 * epoch / NUM_EPOCHS)
     epoch_loss = 0.0
     epoch_acc = 0.0
 
@@ -203,7 +206,7 @@ for epoch in range(NUM_EPOCHS):
         time_accuracy += time.perf_counter() - t0
 
         t0 = time.perf_counter()
-        model.zero_grad()
+        optimizer.zero_grad()
         time_zero_grad += time.perf_counter() - t0
 
         t0 = time.perf_counter()
@@ -211,7 +214,7 @@ for epoch in range(NUM_EPOCHS):
         time_backward += time.perf_counter() - t0
 
         t0 = time.perf_counter()
-        sgd_step(model.parameters(), lr=lr)
+        optimizer.step()
         time_sgd += time.perf_counter() - t0
 
     avg_loss = epoch_loss / num_train_batches

@@ -59,10 +59,7 @@ from .kernels.reduce_kernels import (
     sum_all_kernel,
     sum_axis0_kernel,
 )
-from .tensor_io import (
-    save_safetensors,
-    load_safetensors,
-)
+# tensor_io imported lazily in save()/load() to avoid circular import with tensor_io -> tensor
 
 # -------------------------------------------------------------------------
 # Storage and helpers
@@ -1622,6 +1619,8 @@ class Tensor:
             metadata: Optional string->string metadata in __metadata__.
         """
 
+        from .tensor_io import save_safetensors
+
         save_safetensors(path, {name: self}, metadata=metadata)
 
     @staticmethod
@@ -1645,6 +1644,8 @@ class Tensor:
         Raises:
             KeyError: If name is not in the file.
         """
+
+        from .tensor_io import load_safetensors
 
         state = load_safetensors(path, requires_grad=requires_grad)
         if name not in state:

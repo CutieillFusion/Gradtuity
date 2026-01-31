@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.datasets import make_moons
 
-from gradtuity import MLP, Tensor, ones, sgd_step
+from gradtuity import MLP, SGD, Tensor, ones
 
 # Create plots directory
 PLOT_DIR = os.path.join(os.path.dirname(__file__), "plots")
@@ -121,6 +121,7 @@ print()
 print("Training...")
 print("-" * 40)
 
+optimizer = SGD(model.parameters(), lr=1.0)
 losses_history = []
 acc_history = []
 
@@ -134,12 +135,13 @@ for k in range(100):
     acc_history.append(acc)
 
     # Backward
-    model.zero_grad()
+    optimizer.zero_grad()
     total_loss.backward()
 
     # Update (SGD) - same learning rate schedule as micrograd
     learning_rate = 1.0 - 0.9 * k / 100
-    sgd_step(model.parameters(), lr=learning_rate)
+    optimizer.lr = learning_rate
+    optimizer.step()
 
     if k % 1 == 0:
         print(f"step {k} loss {loss_val:.6f}, accuracy {acc * 100:.1f}%")

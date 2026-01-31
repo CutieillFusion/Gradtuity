@@ -14,7 +14,7 @@ second run loads it and trains further.
 
 import os
 
-from gradtuity import MLP, Tensor, load_safetensors, randn, save_safetensors, sgd_step, zero_grad
+from gradtuity import MLP, SGD, Tensor, load_safetensors, randn, save_safetensors
 
 # Checkpoint path next to this script
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -64,6 +64,7 @@ def main() -> None:
     print("Training...")
     print("-" * 40)
 
+    optimizer = SGD(model.parameters(), lr=learning_rate)
     for step in range(num_iters):
         # Forward
         scores = model(X)
@@ -75,9 +76,9 @@ def main() -> None:
         if step % 10 == 0 or step == num_iters - 1:
             print(f"  step {step:3d}: loss = {loss_val:.4f}")
 
-        zero_grad(model.parameters())
+        optimizer.zero_grad()
         loss.backward()
-        sgd_step(model.parameters(), lr=learning_rate)
+        optimizer.step()
 
     print("-" * 40)
     print()

@@ -14,7 +14,7 @@ Usage:
     uv run python -m gradtuity.demo_train
 """
 
-from gradtuity import Tensor, randn, zero_grad, sgd_step
+from gradtuity import SGD, Tensor, randn
 
 
 def main():
@@ -54,6 +54,7 @@ def main():
     print("Training...")
     print("-" * 40)
 
+    optimizer = SGD([W, b], lr=learning_rate)
     losses = []
     for i in range(num_iterations):
         # Forward pass: Z = relu(X @ W + b)
@@ -71,11 +72,11 @@ def main():
             print(f"  iter {i:3d}: loss = {loss_val:.4f}")
 
         # Backward pass
-        zero_grad([W, b])  # Zero gradients
+        optimizer.zero_grad()
         loss.backward()  # Compute gradients
 
         # SGD update
-        sgd_step([W, b], lr=learning_rate)
+        optimizer.step()
 
     print("-" * 40)
     print()

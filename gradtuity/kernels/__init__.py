@@ -7,7 +7,7 @@ from .elemwise_kernels import (
     relu_kernel,
 )
 from .matmul_kernels import matmul_kernel, transpose2d_kernel
-from .optim_kernels import fill_kernel, sgd_update_kernel
+from .optim_kernels import adamw_step_kernel, fill_kernel, sgd_update_kernel
 from .reduce_kernels import (
     add_bias_kernel,
     add_scalar_inplace_kernel,
@@ -30,6 +30,7 @@ __all__ = [
     "matmul_kernel",
     "transpose2d_kernel",
     # Optimization
+    "adamw_step_kernel",
     "fill_kernel",
     "sgd_update_kernel",
 ]

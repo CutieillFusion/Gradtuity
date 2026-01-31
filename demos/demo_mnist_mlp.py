@@ -26,7 +26,7 @@ import numpy as np
 from sklearn.datasets import fetch_openml
 from sklearn.model_selection import train_test_split
 
-from gradtuity import MLP, Tensor, sgd_step
+from gradtuity import MLP, SGD, Tensor
 
 # Create plots directory
 PLOT_DIR = os.path.join(os.path.dirname(__file__), "plots")
@@ -100,6 +100,8 @@ print()
 BATCH_SIZE = 64
 NUM_EPOCHS = 15
 INITIAL_LR = 0.01
+
+optimizer = SGD(model.parameters(), lr=INITIAL_LR)
 
 
 def create_one_hot(labels, num_classes=10):
@@ -209,6 +211,7 @@ for epoch in range(NUM_EPOCHS):
 
     # Learning rate decay
     lr = INITIAL_LR * (1.0 - 0.5 * epoch / NUM_EPOCHS)
+    optimizer.lr = lr
 
     epoch_loss = 0.0
     epoch_acc = 0.0
@@ -243,7 +246,7 @@ for epoch in range(NUM_EPOCHS):
 
         # --- Zero grad ---
         t0 = time.perf_counter()
-        model.zero_grad()
+        optimizer.zero_grad()
         time_zero_grad += time.perf_counter() - t0
 
         # --- Backward pass ---
@@ -253,7 +256,7 @@ for epoch in range(NUM_EPOCHS):
 
         # --- SGD update ---
         t0 = time.perf_counter()
-        sgd_step(model.parameters(), lr=lr)
+        optimizer.step()
         time_sgd += time.perf_counter() - t0
 
     # Average metrics
