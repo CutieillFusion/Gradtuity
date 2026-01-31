@@ -131,7 +131,7 @@ train_Y_labels = []  # Keep numpy labels for accuracy calculation
 for i in range(num_train_batches):
     start_idx = i * BATCH_SIZE
     end_idx = start_idx + BATCH_SIZE
-    
+
     X_batch_np = X_train[start_idx:end_idx]
     y_batch_np = y_train[start_idx:end_idx]
     train_X_batches.append(Tensor(X_batch_np.tolist()))
@@ -147,13 +147,15 @@ test_Y_labels = []
 for i in range(num_test_batches):
     start_idx = i * TEST_BATCH_SIZE
     end_idx = min(start_idx + TEST_BATCH_SIZE, len(X_test))
-    
+
     X_batch_np = X_test[start_idx:end_idx]
     y_batch_np = y_test[start_idx:end_idx]
     test_X_batches.append(Tensor(X_batch_np.tolist()))
     test_Y_labels.append(y_batch_np)
 
-print(f"Pre-converted {num_train_batches} train batches + {num_test_batches} test batches in {time.time() - preconv_start:.1f}s")
+print(
+    f"Pre-converted {num_train_batches} train batches + {num_test_batches} test batches in {time.time() - preconv_start:.1f}s"
+)
 print()
 
 
@@ -232,7 +234,9 @@ for epoch in range(NUM_EPOCHS):
         # --- Accuracy calculation (GPU argmax) ---
         t0 = time.perf_counter()
         pred_indices = scores.argmax(dim=1)  # GPU argmax
-        predictions = np.array(pred_indices.to_list(), dtype=int)  # Only 64 values transferred
+        predictions = np.array(
+            pred_indices.to_list(), dtype=int
+        )  # Only 64 values transferred
         acc = (predictions == y_labels).mean()
         epoch_acc += acc
         time_accuracy += time.perf_counter() - t0
@@ -276,14 +280,35 @@ for epoch in range(NUM_EPOCHS):
     )
 
     if TIMING_DEBUG:
-        total_train = time_forward + time_loss_calc + time_zero_grad + time_backward + time_sgd + time_accuracy
-        print(f"  Timing breakdown (train loop {total_train:.2f}s + eval {time_eval:.2f}s):")
-        print(f"    Forward:     {time_forward:6.3f}s ({100*time_forward/total_train:5.1f}%)")
-        print(f"    Loss calc:   {time_loss_calc:6.3f}s ({100*time_loss_calc/total_train:5.1f}%)")
-        print(f"    Accuracy:    {time_accuracy:6.3f}s ({100*time_accuracy/total_train:5.1f}%)")
-        print(f"    Zero grad:   {time_zero_grad:6.3f}s ({100*time_zero_grad/total_train:5.1f}%)")
-        print(f"    Backward:    {time_backward:6.3f}s ({100*time_backward/total_train:5.1f}%)")
-        print(f"    SGD update:  {time_sgd:6.3f}s ({100*time_sgd/total_train:5.1f}%)")
+        total_train = (
+            time_forward
+            + time_loss_calc
+            + time_zero_grad
+            + time_backward
+            + time_sgd
+            + time_accuracy
+        )
+        print(
+            f"  Timing breakdown (train loop {total_train:.2f}s + eval {time_eval:.2f}s):"
+        )
+        print(
+            f"    Forward:     {time_forward:6.3f}s ({100 * time_forward / total_train:5.1f}%)"
+        )
+        print(
+            f"    Loss calc:   {time_loss_calc:6.3f}s ({100 * time_loss_calc / total_train:5.1f}%)"
+        )
+        print(
+            f"    Accuracy:    {time_accuracy:6.3f}s ({100 * time_accuracy / total_train:5.1f}%)"
+        )
+        print(
+            f"    Zero grad:   {time_zero_grad:6.3f}s ({100 * time_zero_grad / total_train:5.1f}%)"
+        )
+        print(
+            f"    Backward:    {time_backward:6.3f}s ({100 * time_backward / total_train:5.1f}%)"
+        )
+        print(
+            f"    SGD update:  {time_sgd:6.3f}s ({100 * time_sgd / total_train:5.1f}%)"
+        )
 
 total_time = time.time() - start_time
 print("-" * 60)

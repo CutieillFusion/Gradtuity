@@ -1,7 +1,7 @@
 [project]
 name = "gradtuity"
 version = "0.1.0"
-description = "Add your description here"
+description = "From-scratch tensor autodiff engine with Triton GPU kernels (CUDA, float32). Minimal PyTorch-like API for building and training small neural nets on GPU."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

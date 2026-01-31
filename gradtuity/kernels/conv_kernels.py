@@ -136,11 +136,7 @@ def im2col_kernel_2d(
     val = tl.where(
         in_bounds,
         tl.load(
-            x_ptr
-            + n * (C * H * W)
-            + c * (H * W)
-            + h_in * W
-            + w_in,
+            x_ptr + n * (C * H * W) + c * (H * W) + h_in * W + w_in,
             mask=load_mask,
         ),
         0.0,

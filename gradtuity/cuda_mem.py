@@ -2,8 +2,7 @@
 ctypes interface to CUDA runtime for GPU memory management.
 
 This module provides low-level GPU memory operations by calling CUDA runtime
-functions (libcudart.so) directly via ctypes. No PyTorch, NumPy, or other
-tensor libraries are used.
+functions (libcudart.so) directly via ctypes
 """
 
 import ctypes

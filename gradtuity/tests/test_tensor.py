@@ -295,9 +295,8 @@ class TestTensorDetach:
         t = Tensor([1.0, 2.0, 3.0])
         d = t.detach()
 
-        # Access internal attribute to verify
-        assert d._owns_memory is False
-        assert t._owns_memory is True
+        assert d.owns_memory is False
+        assert t.owns_memory is True
 
 
 class TestTensorFromPtr:

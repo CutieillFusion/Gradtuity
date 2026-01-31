@@ -117,7 +117,9 @@ class Linear(Module):
         return [self.weight, self.bias]
 
     def __repr__(self) -> str:
-        return f"Linear(in_features={self.in_features}, out_features={self.out_features})"
+        return (
+            f"Linear(in_features={self.in_features}, out_features={self.out_features})"
+        )
 
 
 class Flatten(Module):
@@ -153,7 +155,7 @@ class Flatten(Module):
             start_dim = self.start_dim
         if start_dim <= 0 or start_dim >= len(s):
             raise ValueError(
-                f"Flatten start_dim must be in [1, {len(s)-1}], got {self.start_dim}"
+                f"Flatten start_dim must be in [1, {len(s) - 1}], got {self.start_dim}"
             )
         kept = s[:start_dim]
         rest = s[start_dim:]
@@ -296,9 +298,7 @@ class CNN(Module):
         return params
 
     def __repr__(self) -> str:
-        return (
-            "CNN(conv1->relu->pool1->conv2->relu->pool2->flatten->fc1->relu->fc2)"
-        )
+        return "CNN(conv1->relu->pool1->conv2->relu->pool2->flatten->fc1->relu->fc2)"
 
 
 class MLP(Module):
@@ -328,9 +328,7 @@ class MLP(Module):
 
         # Build layers: nin -> nouts[0] -> nouts[1] -> ... -> nouts[-1]
         sizes = [nin] + nouts
-        self.layers = [
-            Linear(sizes[i], sizes[i + 1]) for i in range(len(nouts))
-        ]
+        self.layers = [Linear(sizes[i], sizes[i + 1]) for i in range(len(nouts))]
 
     def __call__(self, x: Tensor) -> Tensor:
         """

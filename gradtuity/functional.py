@@ -11,6 +11,7 @@ import struct
 import triton
 
 from .cuda_mem import cuda_malloc, cuda_memset, cuda_memcpy_htod
+from .kernels.optim_kernels import fill_kernel, sgd_update_kernel
 from .tensor import Tensor
 
 
@@ -25,21 +26,7 @@ def zeros(shape: tuple[int, ...], requires_grad: bool = False) -> Tensor:
     Returns:
         Tensor filled with zeros.
     """
-    # Validate shape
-    if len(shape) not in (1, 2, 3, 4):
-        raise ValueError(f"Only rank 1, 2, 3, or 4 tensors supported, got rank {len(shape)}")
-
-    # Compute total elements and bytes
-    numel = 1
-    for s in shape:
-        numel *= s
-    nbytes = numel * 4  # float32
-
-    # Allocate and zero-initialize
-    ptr = cuda_malloc(nbytes)
-    cuda_memset(ptr, 0, nbytes)
-
-    return Tensor._from_ptr(ptr, shape, owns_memory=True, requires_grad=requires_grad)
+    return Tensor._zeros(shape, requires_grad=requires_grad)
 
 
 def zeros_like(t: Tensor, requires_grad: bool = False) -> Tensor:
@@ -53,7 +40,7 @@ def zeros_like(t: Tensor, requires_grad: bool = False) -> Tensor:
     Returns:
         Tensor filled with zeros, same shape as t.
     """
-    return zeros(t._shape, requires_grad=requires_grad)
+    return Tensor._zeros_like(t, requires_grad=requires_grad)
 
 
 def ones(shape: tuple[int, ...], requires_grad: bool = False) -> Tensor:
@@ -67,16 +54,7 @@ def ones(shape: tuple[int, ...], requires_grad: bool = False) -> Tensor:
     Returns:
         Tensor filled with ones.
     """
-    # Start with zeros (allocates memory)
-    t = zeros(shape, requires_grad=requires_grad)
-
-    # Fill with 1.0 using Triton kernel
-    from .kernels.optim_kernels import fill_kernel
-
-    grid = lambda meta: (triton.cdiv(t._numel, meta["BLOCK"]),)
-    fill_kernel[grid](t._ptr, 1.0, t._numel, BLOCK=256)
-
-    return t
+    return Tensor._ones(shape, requires_grad=requires_grad)
 
 
 def ones_like(t: Tensor, requires_grad: bool = False) -> Tensor:
@@ -90,7 +68,7 @@ def ones_like(t: Tensor, requires_grad: bool = False) -> Tensor:
     Returns:
         Tensor filled with ones, same shape as t.
     """
-    return ones(t._shape, requires_grad=requires_grad)
+    return Tensor._ones_like(t, requires_grad=requires_grad)
 
 
 def randn(
@@ -115,7 +93,9 @@ def randn(
     """
     # Validate shape
     if len(shape) not in (1, 2, 3, 4):
-        raise ValueError(f"Only rank 1, 2, 3, or 4 tensors supported, got rank {len(shape)}")
+        raise ValueError(
+            f"Only rank 1, 2, 3, or 4 tensors supported, got rank {len(shape)}"
+        )
 
     # Set seed if provided
     if seed is not None:
@@ -157,10 +137,8 @@ def full(
     t = zeros(shape, requires_grad=requires_grad)
 
     # Fill with the specified value using Triton kernel
-    from .kernels.optim_kernels import fill_kernel
-
-    grid = lambda meta: (triton.cdiv(t._numel, meta["BLOCK"]),)
-    fill_kernel[grid](t._ptr, fill_value, t._numel, BLOCK=256)
+    grid = lambda meta: (triton.cdiv(t.numel, meta["BLOCK"]),)
+    fill_kernel[grid](t.ptr, fill_value, t.numel, BLOCK=256)
 
     return t
 
@@ -177,7 +155,7 @@ def full_like(t: Tensor, fill_value: float, requires_grad: bool = False) -> Tens
     Returns:
         Tensor filled with fill_value, same shape as t.
     """
-    return full(t._shape, fill_value, requires_grad=requires_grad)
+    return full(t.shape, fill_value, requires_grad=requires_grad)
 
 
 # -------------------------------------------------------------------------
@@ -198,18 +176,16 @@ def zero_grad(params: list[Tensor]) -> None:
     Args:
         params: List of parameter tensors to zero gradients for.
     """
-    from .cuda_mem import cuda_memset
-
     for p in params:
         if not p.requires_grad:
             continue
 
         if p.grad is None:
             # Allocate zero-initialized gradient
-            p.grad = zeros(p._shape)
+            p.grad = zeros(p.shape)
         else:
             # Zero existing gradient with cudaMemset (byte 0)
-            cuda_memset(p.grad._ptr, 0, p.grad._nbytes)
+            cuda_memset(p.grad.ptr, 0, p.grad.nbytes)
 
 
 def sgd_step(params: list[Tensor], lr: float) -> None:
@@ -227,8 +203,6 @@ def sgd_step(params: list[Tensor], lr: float) -> None:
     Raises:
         RuntimeError: If any parameter's grad is None.
     """
-    from .kernels.optim_kernels import sgd_update_kernel
-
     for p in params:
         if not p.requires_grad:
             continue
@@ -239,5 +213,5 @@ def sgd_step(params: list[Tensor], lr: float) -> None:
                 "Call backward() before sgd_step()."
             )
 
-        grid = lambda meta: (triton.cdiv(p._numel, meta["BLOCK"]),)
-        sgd_update_kernel[grid](p._ptr, p.grad._ptr, lr, p._numel, BLOCK=256)
+        grid = lambda meta: (triton.cdiv(p.numel, meta["BLOCK"]),)
+        sgd_update_kernel[grid](p.ptr, p.grad.ptr, lr, p.numel, BLOCK=256)

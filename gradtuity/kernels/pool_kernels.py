@@ -55,9 +55,7 @@ def maxpool2d_forward_kernel(
                     h_in = h_start + kh
                     w_in = w_start + kw
                     if h_in < H and w_in < W:
-                        x_offset = (
-                            n * (C * H * W) + c * (H * W) + h_in * W + w_in
-                        )
+                        x_offset = n * (C * H * W) + c * (H * W) + h_in * W + w_in
                         val = tl.load(x_ptr + x_offset)
                         if val > max_val:
                             max_val = val

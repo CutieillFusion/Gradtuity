@@ -4,6 +4,9 @@ Tests for nn.py - Neural network modules.
 These tests require a CUDA-enabled GPU to run.
 """
 
+import random
+
+import numpy as np
 import pytest
 
 from gradtuity import (
@@ -273,7 +276,6 @@ class TestConv2d:
         read freed memory. This test ensures we keep the storage alive via the backward
         closure. Also ensures no double-free of the matmul output buffer (out_flat_ptr).
         """
-        import numpy as np
 
         conv = Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
         x_data = np.zeros((32, 1, 28, 28), dtype=np.float32)
@@ -288,7 +290,6 @@ class TestConv2d:
 
     def test_conv2d_then_multiple_ops_storage_valid(self):
         """Regression: conv2d output used in several downstream ops (stress storage lifetime)."""
-        import numpy as np
 
         conv = Conv2d(1, 8, kernel_size=3, stride=1, padding=1)
         x_data = np.zeros((4, 1, 14, 14), dtype=np.float32)
@@ -320,7 +321,6 @@ class TestMaxPool2d:
         """
         pool = MaxPool2d(kernel_size=2, stride=2)
         # Same shape as after first conv in CNN: (batch, 32, 28, 28)
-        import numpy as np
         data = np.zeros((4, 32, 28, 28), dtype=np.float32)
         x = Tensor(data.tolist())
         y = pool(x)
@@ -334,7 +334,6 @@ class TestMaxPool2d:
         if idx_ptr were leaked each time.
         """
         pool = MaxPool2d(kernel_size=2, stride=2)
-        import numpy as np
         # CNN-like shape so we allocate non-trivial idx buffer each time
         data = np.zeros((8, 16, 14, 14), dtype=np.float32)
         x = Tensor(data.tolist(), requires_grad=False)
@@ -367,7 +366,6 @@ class TestCNN:
         works without illegal memory access on non-trivial batch.
         """
         model = CNN()
-        import numpy as np
         x_data = np.zeros((4, 1, 28, 28), dtype=np.float32)
         x = Tensor(x_data.tolist())
         y = model(x)
@@ -382,7 +380,6 @@ class TestCNN:
         when conv+pool grids are large (demo uses BATCH_SIZE=64).
         """
         model = CNN()
-        import numpy as np
         x_data = np.zeros((32, 1, 28, 28), dtype=np.float32)
         x = Tensor(x_data.tolist())
         y = model(x)
@@ -876,7 +873,6 @@ class TestArgmax:
     def test_argmax_larger_tensor(self):
         """Test argmax on a larger tensor (like MNIST scores)."""
         # Simulate 4 samples with 10 classes (fixed seed for determinism)
-        import random
 
         random.seed(42)
         data = []
@@ -1162,7 +1158,9 @@ class TestLinearRelu:
         """Test linear_relu backward when only input requires grad."""
         x = Tensor([[1.0, 2.0]], requires_grad=True)
         w = Tensor([[1.0, 0.0], [0.0, 1.0]], requires_grad=False)
-        b = Tensor([0.0, -10.0], requires_grad=False)  # Second output will be zeroed by relu
+        b = Tensor(
+            [0.0, -10.0], requires_grad=False
+        )  # Second output will be zeroed by relu
 
         y = x.linear_relu(w, b)
         # y = relu([1,2] @ I + [0,-10]) = relu([1, -8]) = [1, 0]
@@ -1181,7 +1179,9 @@ class TestLinearRelu:
     def test_linear_relu_backward_relu_blocks_gradient(self):
         """Test that relu mask correctly blocks gradients for negative pre-activations."""
         x = Tensor([[1.0]], requires_grad=True)
-        w = Tensor([[-1.0, 1.0]], requires_grad=True)  # One negative, one positive output
+        w = Tensor(
+            [[-1.0, 1.0]], requires_grad=True
+        )  # One negative, one positive output
         b = Tensor([0.0, 0.0], requires_grad=True)
 
         y = x.linear_relu(w, b)

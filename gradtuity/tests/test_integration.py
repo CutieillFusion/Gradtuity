@@ -116,7 +116,7 @@ class TestGradientCorrectness:
         B = Tensor([[1.0, 0.0], [0.0, 1.0]], requires_grad=True)  # Identity
 
         C = A.matmul(B)  # C = A @ I = A
-        loss = C.sum()   # sum of all elements
+        loss = C.sum()  # sum of all elements
 
         loss.backward()
 
@@ -292,7 +292,7 @@ class TestEdgeCases:
         w = Tensor([[2.0]], requires_grad=True)
 
         y = x.matmul(w)  # [[2.0]]
-        loss = y.sum()   # 2.0
+        loss = y.sum()  # 2.0
 
         assert loss.item() == pytest.approx(2.0)
 

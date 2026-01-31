@@ -2,14 +2,14 @@
 Pytest configuration and fixtures for gradtuity tests.
 """
 
+import ctypes
+
 import pytest
 
 
 def _check_cuda_available() -> bool:
     """Check if CUDA runtime is available (for ctypes-based operations)."""
     try:
-        import ctypes
-
         libcudart = ctypes.CDLL("libcudart.so")
         # Try a simple CUDA call
         device_count = ctypes.c_int()

@@ -138,7 +138,9 @@ for i in range(num_test_batches):
     test_X_batches.append(Tensor(X_batch_4d.tolist()))
     test_Y_labels.append(y_batch_np)
 
-print(f"Pre-converted {num_train_batches} train batches + {num_test_batches} test batches in {time.time() - preconv_start:.1f}s")
+print(
+    f"Pre-converted {num_train_batches} train batches + {num_test_batches} test batches in {time.time() - preconv_start:.1f}s"
+)
 print()
 
 
@@ -231,14 +233,35 @@ for epoch in range(NUM_EPOCHS):
         f"Time: {epoch_time:.1f}s"
     )
     if TIMING_DEBUG:
-        total_train = time_forward + time_loss_calc + time_zero_grad + time_backward + time_sgd + time_accuracy
-        print(f"  Timing breakdown (train loop {total_train:.2f}s + eval {time_eval:.2f}s):")
-        print(f"    Forward:     {time_forward:6.3f}s ({100*time_forward/total_train:5.1f}%)")
-        print(f"    Loss calc:   {time_loss_calc:6.3f}s ({100*time_loss_calc/total_train:5.1f}%)")
-        print(f"    Accuracy:    {time_accuracy:6.3f}s ({100*time_accuracy/total_train:5.1f}%)")
-        print(f"    Zero grad:   {time_zero_grad:6.3f}s ({100*time_zero_grad/total_train:5.1f}%)")
-        print(f"    Backward:    {time_backward:6.3f}s ({100*time_backward/total_train:5.1f}%)")
-        print(f"    SGD update:  {time_sgd:6.3f}s ({100*time_sgd/total_train:5.1f}%)")
+        total_train = (
+            time_forward
+            + time_loss_calc
+            + time_zero_grad
+            + time_backward
+            + time_sgd
+            + time_accuracy
+        )
+        print(
+            f"  Timing breakdown (train loop {total_train:.2f}s + eval {time_eval:.2f}s):"
+        )
+        print(
+            f"    Forward:     {time_forward:6.3f}s ({100 * time_forward / total_train:5.1f}%)"
+        )
+        print(
+            f"    Loss calc:   {time_loss_calc:6.3f}s ({100 * time_loss_calc / total_train:5.1f}%)"
+        )
+        print(
+            f"    Accuracy:    {time_accuracy:6.3f}s ({100 * time_accuracy / total_train:5.1f}%)"
+        )
+        print(
+            f"    Zero grad:   {time_zero_grad:6.3f}s ({100 * time_zero_grad / total_train:5.1f}%)"
+        )
+        print(
+            f"    Backward:    {time_backward:6.3f}s ({100 * time_backward / total_train:5.1f}%)"
+        )
+        print(
+            f"    SGD update:  {time_sgd:6.3f}s ({100 * time_sgd / total_train:5.1f}%)"
+        )
 
 total_time = time.time() - start_time
 print("-" * 60)
@@ -278,8 +301,20 @@ ax1.set_xlabel("Epoch")
 ax1.set_ylabel("Loss")
 ax1.set_title("Training Loss (CNN)")
 ax1.grid(True, alpha=0.3)
-ax2.plot(range(1, NUM_EPOCHS + 1), [a * 100 for a in train_accuracies], "b-", linewidth=2, label="Train")
-ax2.plot(range(1, NUM_EPOCHS + 1), [a * 100 for a in test_accuracies], "r-", linewidth=2, label="Test")
+ax2.plot(
+    range(1, NUM_EPOCHS + 1),
+    [a * 100 for a in train_accuracies],
+    "b-",
+    linewidth=2,
+    label="Train",
+)
+ax2.plot(
+    range(1, NUM_EPOCHS + 1),
+    [a * 100 for a in test_accuracies],
+    "r-",
+    linewidth=2,
+    label="Test",
+)
 ax2.set_xlabel("Epoch")
 ax2.set_ylabel("Accuracy (%)")
 ax2.set_title("Training and Test Accuracy (CNN)")
