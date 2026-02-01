@@ -29,6 +29,8 @@ from .kernels.conv_kernels import col2im_kernel, im2col_kernel_2d
 from .kernels.elemwise_kernels import (
     add_inplace_kernel,
     add_kernel,
+    gelu_backward_kernel,
+    gelu_kernel,
     mul_backward_kernel,
     mul_kernel,
     mul_scalar_kernel,
@@ -62,6 +64,10 @@ from .kernels.reduce_kernels import (
     argmax_axis1_kernel,
     sum_all_kernel,
     sum_axis0_kernel,
+)
+from .kernels.softmax_kernels import (
+    softmax_backward_kernel,
+    softmax_forward_kernel,
 )
 # tensor_io imported lazily in save()/load() to avoid circular import with tensor_io -> tensor
 
@@ -693,6 +699,126 @@ class Tensor:
                 relu_backward_kernel[grid1d(x.numel)](
                     x.grad.ptr, g.ptr, x.ptr, x.numel, BLOCK=BLOCK
                 )
+
+        out._set_graph(parents=(self,), backward_fn=_backward)
+        return out
+
+    def gelu(self, approx: str = "tanh") -> "Tensor":
+        """
+        GELU activation (tanh approximation): 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715*x^3)))
+
+        Args:
+            approx: Only "tanh" supported in v1.
+
+        Returns:
+            New tensor with GELU applied elementwise.
+        """
+        if approx != "tanh":
+            raise ValueError(f'gelu approx must be "tanh" in v1, got {approx!r}')
+        out = empty_tensor(self.shape)
+        gelu_kernel[grid1d(self.numel)](
+            self.ptr, out.ptr, self.numel, BLOCK=BLOCK
+        )
+
+        x = self
+
+        def _backward(g: Tensor) -> None:
+            if x.requires_grad:
+                ensure_grad(x)
+                with temp_storage(x.numel * F32, zero=False) as st:
+                    grad_tmp = Tensor._wrap(st, x.shape, requires_grad=False)
+                    gelu_backward_kernel[grid1d(x.numel)](
+                        grad_tmp.ptr, g.ptr, x.ptr, x.numel, BLOCK=BLOCK
+                    )
+                    add_inplace_kernel[grid1d(x.numel)](
+                        x.grad.ptr, grad_tmp.ptr, x.numel, BLOCK=BLOCK
+                    )
+
+        out._set_graph(parents=(self,), backward_fn=_backward)
+        return out
+
+    def softmax(self, dim: int = -1) -> "Tensor":
+        """
+        Softmax over the last dimension (v1: only dim=-1 supported).
+
+        Numerically stable: max-subtract then exp/sum per row.
+        Treats input as (rows, cols) with cols = shape[-1], rows = numel // cols.
+
+        Args:
+            dim: Must be -1 in v1.
+
+        Returns:
+            Tensor of same shape; each row sums to 1.
+        """
+        if dim != -1:
+            raise ValueError(f"softmax v1 only supports dim=-1, got dim={dim}")
+        cols = self.shape[-1]
+        rows = self.numel // cols
+        out = empty_tensor(self.shape)
+        BLOCK_COLS = 1024
+        softmax_forward_kernel[(rows,)](
+            self.ptr,
+            out.ptr,
+            rows=rows,
+            cols=cols,
+            BLOCK_COLS=BLOCK_COLS,
+        )
+
+        x = self
+        out_saved = out
+
+        def _backward(g: Tensor) -> None:
+            if x.requires_grad:
+                ensure_grad(x)
+                softmax_backward_kernel[(rows,)](
+                    x.grad.ptr,
+                    g.ptr,
+                    out_saved.ptr,
+                    rows=rows,
+                    cols=cols,
+                    BLOCK_COLS=BLOCK_COLS,
+                )
+
+        out._set_graph(parents=(self,), backward_fn=_backward)
+        return out
+
+    def transpose4d_last2(self) -> "Tensor":
+        """
+        Transpose last two dimensions of a 4D tensor: (B, H, S, D) -> (B, H, D, S).
+
+        Rank must be 4. Allocates a new contiguous tensor. Backward is the same
+        transpose (inverse permutation).
+
+        Returns:
+            Tensor of shape (B, H, D, S).
+        """
+        if self.ndim != 4:
+            raise ValueError(
+                f"transpose4d_last2 requires ndim=4, got ndim={self.ndim}"
+            )
+        B, H, S, D = self.shape
+        out_shape = (B, H, D, S)
+        out = empty_tensor(out_shape)
+        slice_elems = S * D
+        for k in range(B * H):
+            in_offset = k * slice_elems * F32
+            out_offset = k * (D * S) * F32
+            transpose2d_kernel[
+                (triton.cdiv(S * D, BLOCK),)
+            ](
+                self.ptr + in_offset,
+                out.ptr + out_offset,
+                rows=S,
+                cols=D,
+                BLOCK=BLOCK,
+            )
+
+        x = self
+
+        def _backward(g: Tensor) -> None:
+            if x.requires_grad:
+                # Inverse of swap last two is same op: grad has shape (B,H,D,S), transpose -> (B,H,S,D)
+                accum_grad(x, g.detach().transpose4d_last2())
 
         out._set_graph(parents=(self,), backward_fn=_backward)
         return out

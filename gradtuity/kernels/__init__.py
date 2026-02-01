@@ -3,6 +3,8 @@
 from .elemwise_kernels import (
     add_inplace_kernel,
     add_kernel,
+    gelu_backward_kernel,
+    gelu_kernel,
     relu_backward_kernel,
     relu_kernel,
 )
@@ -15,11 +17,14 @@ from .reduce_kernels import (
     sum_axis0_kernel,
 )
 from .one_hot_kernels import one_hot_kernel
+from .softmax_kernels import softmax_backward_kernel, softmax_forward_kernel
 
 __all__ = [
     # Elementwise
     "add_kernel",
     "add_inplace_kernel",
+    "gelu_kernel",
+    "gelu_backward_kernel",
     "relu_kernel",
     "relu_backward_kernel",
     # Reduction
@@ -36,4 +41,7 @@ __all__ = [
     "sgd_update_kernel",
     # One-hot
     "one_hot_kernel",
+    # Softmax
+    "softmax_forward_kernel",
+    "softmax_backward_kernel",
 ]

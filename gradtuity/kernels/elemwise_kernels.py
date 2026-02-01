@@ -298,3 +298,76 @@ def scale_backward_kernel(
     grad = grad + out_grad * scalar
 
     tl.store(grad_ptr + offsets, grad, mask=mask)
+
+
+@triton.jit
+def gelu_kernel(
+    in_ptr: tl.pointer_type(tl.float32),
+    out_ptr: tl.pointer_type(tl.float32),
+    n_elements: tl.int32,
+    BLOCK: tl.constexpr,
+):
+    """
+    GELU forward (tanh approximation): out = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715*x^3)))
+
+    Args:
+        in_ptr: Input tensor GPU pointer (float32*).
+        out_ptr: Output tensor GPU pointer (float32*).
+        n_elements: Total number of elements.
+        BLOCK: Block size (compile-time constant).
+    """
+    pid = tl.program_id(0)
+    offsets = pid * BLOCK + tl.arange(0, BLOCK)
+    mask = offsets < n_elements
+
+    x = tl.load(in_ptr + offsets, mask=mask, other=0.0)
+    # sqrt(2/pi) ~ 0.7978845608028654, GELU x^3 coef = 0.044715
+    u = 0.7978845608028654 * (x + 0.044715 * x * x * x)
+    # tanh(u): for u>=0 use 2/(1+exp(-2u))-1 (avoids overflow); for u<0 use (exp(2u)-1)/(exp(2u)+1)
+    t = tl.where(
+        u >= 0.0,
+        2.0 / (1.0 + tl.exp(-2.0 * u)) - 1.0,
+        (tl.exp(2.0 * u) - 1.0) / (tl.exp(2.0 * u) + 1.0),
+    )
+    out = 0.5 * x * (1.0 + t)
+
+    tl.store(out_ptr + offsets, out, mask=mask)
+
+
+@triton.jit
+def gelu_backward_kernel(
+    dx_ptr: tl.pointer_type(tl.float32),
+    dy_ptr: tl.pointer_type(tl.float32),
+    x_ptr: tl.pointer_type(tl.float32),
+    n_elements: tl.int32,
+    BLOCK: tl.constexpr,
+):
+    """
+    GELU backward (tanh approximation): dx = dy * dgelu_dx, single write (no accumulation).
+
+    Args:
+        dx_ptr: Gradient w.r.t. input (float32*), written (not accumulated).
+        dy_ptr: Upstream gradient (float32*).
+        x_ptr: Original input x (float32*).
+        n_elements: Total number of elements.
+        BLOCK: Block size (compile-time constant).
+    """
+    pid = tl.program_id(0)
+    offsets = pid * BLOCK + tl.arange(0, BLOCK)
+    mask = offsets < n_elements
+
+    dy = tl.load(dy_ptr + offsets, mask=mask, other=0.0)
+    x = tl.load(x_ptr + offsets, mask=mask, other=0.0)
+
+    u = 0.7978845608028654 * (x + 0.044715 * x * x * x)
+    t = tl.where(
+        u >= 0.0,
+        2.0 / (1.0 + tl.exp(-2.0 * u)) - 1.0,
+        (tl.exp(2.0 * u) - 1.0) / (tl.exp(2.0 * u) + 1.0),
+    )
+    sech2 = 1.0 - t * t
+    du_dx = 0.7978845608028654 * (1.0 + 3.0 * 0.044715 * x * x)
+    dgelu_dx = 0.5 * (1.0 + t) + 0.5 * x * sech2 * du_dx
+    dx = dy * dgelu_dx
+
+    tl.store(dx_ptr + offsets, dx, mask=mask)

@@ -822,6 +822,264 @@ class TestRelu:
 
 @pytest.mark.requires_cuda
 @pytest.mark.requires_triton
+class TestGELU:
+    """Tests for GELU activation (tanh approximation)."""
+
+    @staticmethod
+    def _gelu_numpy_ref(x_np):
+        """NumPy GELU (tanh approx) on float32 array; vectorized, no Python loop."""
+        import numpy as np
+        sqrt_2_over_pi = np.sqrt(np.float32(2.0 / np.pi))
+        u = sqrt_2_over_pi * (x_np + np.float32(0.044715) * x_np**3)
+        return np.float32(0.5) * x_np * (np.float32(1.0) + np.tanh(u))
+
+    def _flatten(self, lst):
+        """Flatten nested list to 1D for approx comparison."""
+        out = []
+        for x in lst:
+            if isinstance(x, (list, tuple)):
+                out.extend(self._flatten(x))
+            else:
+                out.append(x)
+        return out
+
+    def test_gelu_forward_1d(self):
+        """Test GELU forward vs NumPy for 1D."""
+        import numpy as np
+        data = [1.0, -1.0, 0.0, 2.0, -2.0]
+        x_np = np.array(data, dtype=np.float32)
+        expected = self._gelu_numpy_ref(x_np)
+        x = Tensor(data)
+        y = x.gelu()
+        assert y.shape == (5,)
+        assert y.to_list() == pytest.approx(expected.tolist(), rel=1e-5, abs=1e-6)
+
+    def test_gelu_forward_2d(self):
+        """Test GELU forward vs NumPy for 2D."""
+        import numpy as np
+        data = [[1.0, -1.0], [0.5, -0.5]]
+        x_np = np.array(data, dtype=np.float32)
+        expected = self._gelu_numpy_ref(x_np)
+        x = Tensor(data)
+        y = x.gelu()
+        assert y.shape == (2, 2)
+        assert self._flatten(y.to_list()) == pytest.approx(
+            self._flatten(expected.tolist()), rel=1e-5, abs=1e-6
+        )
+
+    def test_gelu_forward_4d(self):
+        """Test GELU forward for 4D shape (1,2,3,4)."""
+        import numpy as np
+        np.random.seed(42)
+        x_np = np.random.randn(1, 2, 3, 4).astype(np.float32)
+        expected = self._gelu_numpy_ref(x_np)
+        x = Tensor(x_np.tolist())
+        y = x.gelu()
+        assert y.shape == (1, 2, 3, 4)
+        assert self._flatten(y.to_list()) == pytest.approx(
+            self._flatten(expected.tolist()), rel=1e-5, abs=2e-5
+        )
+
+    def test_gelu_rejects_approx(self):
+        """Test that gelu(approx=...) only accepts 'tanh' in v1."""
+        x = Tensor([1.0, 2.0])
+        with pytest.raises(ValueError, match="approx"):
+            x.gelu(approx="exact")
+
+    def test_gelu_backward_via_sum(self):
+        """Test GELU backward: L = sum(gelu(x)), backward(), check grad."""
+        import numpy as np
+        x = Tensor([1.0, 2.0, -1.0, 0.5], requires_grad=True)
+        y = x.gelu()
+        loss = y.sum()
+        loss.backward()
+        assert x.grad is not None
+        assert x.grad.shape == (4,)
+        g = np.array(x.grad.to_list(), dtype=np.float32)
+        assert np.all(np.isfinite(g))
+
+    def test_gelu_backward_finite_difference(self):
+        """Test GELU backward with finite-difference gradient check."""
+        import numpy as np
+        eps = 1e-3  # meaningful in float32; 1e-5 is too small
+        np.random.seed(123)
+        data = np.random.randn(32).astype(np.float32) * 0.5
+        x = Tensor(data.tolist(), requires_grad=True)
+        y = x.gelu()
+        loss = y.sum()
+        loss.backward()
+        grad_gradtuity = np.array(x.grad.to_list(), dtype=np.float32)
+        grad_numeric = np.zeros_like(data)
+        for i in range(len(data)):
+            data_plus = data.copy()
+            data_plus[i] += eps
+            data_minus = data.copy()
+            data_minus[i] -= eps
+            loss_plus = np.sum(self._gelu_numpy_ref(data_plus))
+            loss_minus = np.sum(self._gelu_numpy_ref(data_minus))
+            grad_numeric[i] = (loss_plus - loss_minus) / (2.0 * eps)
+        assert grad_gradtuity == pytest.approx(grad_numeric, rel=0.05, abs=0.01)
+
+    def test_gelu_no_grad(self):
+        """Test GELU with requires_grad=False does not build graph."""
+        x = Tensor([1.0, 2.0])
+        y = x.gelu()
+        assert y.requires_grad is False
+        assert y.grad is None
+
+    def test_gelu_no_nans_large(self):
+        """GELU forward is finite for large-magnitude inputs (tanh stability)."""
+        import numpy as np
+        x = Tensor([50.0, -50.0, 20.0, -20.0])
+        y = x.gelu()
+        out = np.array(y.to_list(), dtype=np.float32)
+        assert np.all(np.isfinite(out))
+
+    def test_gelu_grad_accumulates(self):
+        """Backward accumulates into x.grad when x is used twice (overwrite vs add)."""
+        import numpy as np
+        data = [0.1, -0.2, 0.3]
+        x = Tensor(data, requires_grad=True)
+        y1 = x.gelu().sum()
+        y2 = x.gelu().sum()
+        loss = y1.add(y2)
+        loss.backward()
+        x_ref = Tensor(data, requires_grad=True)
+        y_ref = x_ref.gelu().sum()
+        y_ref.backward()
+        g = np.array(x.grad.to_list(), dtype=np.float32)
+        g_ref = np.array(x_ref.grad.to_list(), dtype=np.float32)
+        assert np.all(np.isfinite(g))
+        assert g == pytest.approx(2.0 * g_ref, rel=1e-5, abs=1e-6)
+
+
+@pytest.mark.requires_cuda
+@pytest.mark.requires_triton
+class TestSoftmax:
+    """Tests for softmax(dim=-1)."""
+
+    @staticmethod
+    def _softmax_numpy(x_np):
+        """Stable softmax over last axis (float32)."""
+        import numpy as np
+        x = np.asarray(x_np, dtype=np.float32)
+        m = np.max(x, axis=-1, keepdims=True)
+        e = np.exp(x - m)
+        return (e / np.sum(e, axis=-1, keepdims=True)).astype(np.float32)
+
+    def test_softmax_forward_2d(self):
+        """Test softmax forward vs NumPy for 2D (rows, cols)."""
+        import numpy as np
+        data = [[1.0, 2.0, 3.0], [0.0, 1.0, -1.0]]
+        x_np = np.array(data, dtype=np.float32)
+        expected = self._softmax_numpy(x_np)
+        x = Tensor(data)
+        y = x.softmax(dim=-1)
+        assert y.shape == (2, 3)
+        flat_y = np.array(y.to_list()).ravel()
+        flat_expected = expected.ravel()
+        assert flat_y == pytest.approx(flat_expected, rel=1e-5, abs=1e-6)
+
+    def test_softmax_sum_to_one(self):
+        """Per-row sum of softmax is 1."""
+        import numpy as np
+        x = Tensor([[1.0, 2.0, 1.0], [-1.0, 0.0, 1.0]])
+        y = x.softmax(dim=-1)
+        rows = np.array(y.to_list())
+        row_sums = np.sum(rows, axis=1)
+        assert row_sums == pytest.approx(np.ones(2), abs=1e-4)
+
+    def test_softmax_forward_4d(self):
+        """Test softmax on 4D (B, H, S, S) last dim as cols."""
+        import numpy as np
+        np.random.seed(42)
+        x_np = np.random.randn(2, 2, 3, 4).astype(np.float32) * 0.5
+        expected = self._softmax_numpy(x_np)
+        x = Tensor(x_np.tolist())
+        y = x.softmax(dim=-1)
+        assert y.shape == (2, 2, 3, 4)
+        flat_y = np.array(y.to_list()).ravel()
+        flat_expected = expected.ravel()
+        assert flat_y == pytest.approx(flat_expected, rel=1e-4, abs=2e-5)
+
+    def test_softmax_rejects_dim(self):
+        """Test that softmax v1 only accepts dim=-1."""
+        x = Tensor([[1.0, 2.0]])
+        with pytest.raises(ValueError, match="dim=-1"):
+            x.softmax(dim=0)
+
+    def test_softmax_backward_via_sum(self):
+        """Softmax backward: L = sum(softmax(x)), check grad finite."""
+        import numpy as np
+        x = Tensor([[1.0, 2.0, 0.5], [-0.5, 0.0, 1.0]], requires_grad=True)
+        y = x.softmax(dim=-1)
+        loss = y.sum()
+        loss.backward()
+        assert x.grad is not None
+        assert x.grad.shape == (2, 3)
+        g = np.array(x.grad.to_list(), dtype=np.float32)
+        assert np.all(np.isfinite(g))
+
+    def test_softmax_no_grad(self):
+        """Softmax with requires_grad=False does not build graph."""
+        x = Tensor([[1.0, 2.0]])
+        y = x.softmax(dim=-1)
+        assert y.requires_grad is False
+        assert y.grad is None
+
+
+@pytest.mark.requires_cuda
+@pytest.mark.requires_triton
+class TestTranspose4D:
+    """Tests for transpose4d_last2: (B,H,S,D) -> (B,H,D,S)."""
+
+    def test_transpose4d_round_trip(self):
+        """Round-trip: transpose4d_last2().transpose4d_last2() equals identity."""
+        import numpy as np
+        np.random.seed(42)
+        x_np = np.random.randn(2, 3, 4, 5).astype(np.float32)
+        x = Tensor(x_np.tolist())
+        y = x.transpose4d_last2()
+        assert y.shape == (2, 3, 5, 4)
+        z = y.transpose4d_last2()
+        assert z.shape == (2, 3, 4, 5)
+        flat_x = np.array(x.to_list()).ravel()
+        flat_z = np.array(z.to_list()).ravel()
+        assert flat_z == pytest.approx(flat_x, rel=1e-5, abs=1e-6)
+
+    def test_transpose4d_backward(self):
+        """Backward: L = sum(transpose4d_last2(x)), grad should be ones (after inverse transpose)."""
+        import numpy as np
+        x = Tensor(
+            [[[[1.0, 2.0], [3.0, 4.0]]]],  # (1,1,2,2)
+            requires_grad=True,
+        )
+        y = x.transpose4d_last2()
+        loss = y.sum()
+        loss.backward()
+        assert x.grad is not None
+        assert x.grad.shape == (1, 1, 2, 2)
+        # d(sum(y))/d(x) = ones in same layout as x; backward transposes out_grad (ones (1,1,2,2)) -> same
+        g = np.array(x.grad.to_list(), dtype=np.float32)
+        assert np.all(np.isfinite(g))
+        assert g == pytest.approx(np.ones((1, 1, 2, 2), dtype=np.float32))
+
+    def test_transpose4d_rejects_non_4d(self):
+        """transpose4d_last2 rejects non-4D tensors."""
+        x = Tensor([[1.0, 2.0], [3.0, 4.0]])
+        with pytest.raises(ValueError, match="ndim=4"):
+            x.transpose4d_last2()
+
+    def test_transpose4d_no_grad(self):
+        """transpose4d_last2 with requires_grad=False does not build graph."""
+        x = Tensor([[[[1.0, 2.0], [3.0, 4.0]]]])  # (1,1,2,2)
+        y = x.transpose4d_last2()
+        assert y.requires_grad is False
+        assert y.grad is None
+
+
+@pytest.mark.requires_cuda
+@pytest.mark.requires_triton
 class TestAddReluIntegration:
     """Integration tests combining add and relu operations."""
 
