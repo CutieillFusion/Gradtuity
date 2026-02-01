@@ -647,6 +647,146 @@ class Tensor:
         out._set_graph(parents=(self, other), backward_fn=_backward)
         return out
 
+    def bmm(self, other: "Tensor") -> "Tensor":
+        """
+        Batched matrix multiplication: C = self @ other per batch slice.
+
+        Supports rank-3 and rank-4:
+        - Rank-3: a (B, M, K), b (B, K, N) -> out (B, M, N)
+        - Rank-4: a (B, H, M, K), b (B, H, K, N) -> out (B, H, M, N) via flattening to (B*H, M, K) @ (B*H, K, N)
+
+        Args:
+            other: Right-hand batched matrix, same ndim as self with compatible dimensions.
+
+        Returns:
+            Batched matrix product, shape (B, M, N) or (B, H, M, N).
+        """
+        ndim = self.ndim
+        if ndim not in (3, 4):
+            raise ValueError(
+                f"bmm requires ndim 3 or 4, got self.ndim={ndim}"
+            )
+        if other.ndim != ndim:
+            raise ValueError(
+                f"bmm requires same ndim for both tensors, got {ndim} vs {other.ndim}"
+            )
+
+        BLOCK_M = 32
+        BLOCK_N = 32
+        BLOCK_K = 32
+
+        if ndim == 3:
+            Bflat, M, K = self.shape
+            B2, K2, N = other.shape
+            if B2 != Bflat:
+                raise ValueError(
+                    f"bmm batch dim mismatch: {self.shape} vs {other.shape}"
+                )
+            if K2 != K:
+                raise ValueError(
+                    f"bmm inner dim mismatch: a.shape[2]={K} vs b.shape[1]={K2}"
+                )
+            out_shape_flat = (Bflat, M, N)
+            out = empty_tensor(out_shape_flat)
+            is_rank4 = False
+            B, H = None, None
+        else:
+            B, H, M, K = self.shape
+            B2, H2, K2, N = other.shape
+            if B2 != B or H2 != H:
+                raise ValueError(
+                    f"bmm batch/head dim mismatch: {self.shape} vs {other.shape}"
+                )
+            if K2 != K:
+                raise ValueError(
+                    f"bmm inner dim mismatch: a.shape[3]={K} vs b.shape[2]={K2}"
+                )
+            Bflat = B * H
+            out = empty_tensor((B, H, M, N))
+            is_rank4 = True
+
+        a_tensor = self
+        b_tensor = other
+
+        # Forward: loop over batch slices (row-major slice i = b*H+h at offset i*M*N)
+        for i in range(Bflat):
+            a_ptr_i = self.ptr + i * (M * K) * F32
+            b_ptr_i = other.ptr + i * (K * N) * F32
+            c_ptr_i = out.ptr + i * (M * N) * F32
+            grid = (triton.cdiv(M, BLOCK_M), triton.cdiv(N, BLOCK_N))
+            matmul_kernel[grid](
+                a_ptr_i,
+                b_ptr_i,
+                c_ptr_i,
+                M,
+                N,
+                K,
+                K,
+                1,
+                N,
+                1,
+                N,
+                1,
+                BLOCK_M=BLOCK_M,
+                BLOCK_N=BLOCK_N,
+                BLOCK_K=BLOCK_K,
+            )
+
+        def _backward(out_grad: Tensor) -> None:
+            if is_rank4:
+                out_grad_flat = out_grad.view((Bflat, M, N))
+            else:
+                out_grad_flat = out_grad
+            for i in range(Bflat):
+                dC_i = out_grad_flat.ptr + i * (M * N) * F32
+                A_i = a_tensor.ptr + i * (M * K) * F32
+                B_i = b_tensor.ptr + i * (K * N) * F32
+                if a_tensor.requires_grad:
+                    ensure_grad(a_tensor)
+                    dA_i = a_tensor.grad.ptr + i * (M * K) * F32
+                    grid_da = (triton.cdiv(M, BLOCK_M), triton.cdiv(K, BLOCK_N))
+                    matmul_nt_acc_kernel[grid_da](
+                        dC_i,
+                        B_i,
+                        dA_i,
+                        M,
+                        K,
+                        N,
+                        N,
+                        1,
+                        N,
+                        1,
+                        K,
+                        1,
+                        BLOCK_M=BLOCK_M,
+                        BLOCK_N=BLOCK_N,
+                        BLOCK_K=BLOCK_K,
+                    )
+                if b_tensor.requires_grad:
+                    ensure_grad(b_tensor)
+                    dB_i = b_tensor.grad.ptr + i * (K * N) * F32
+                    grid_db = (triton.cdiv(K, BLOCK_M), triton.cdiv(N, BLOCK_N))
+                    matmul_tn_acc_kernel[grid_db](
+                        A_i,
+                        dC_i,
+                        dB_i,
+                        K,
+                        N,
+                        M,
+                        K,
+                        1,
+                        N,
+                        1,
+                        N,
+                        1,
+                        BLOCK_M=BLOCK_M,
+                        BLOCK_N=BLOCK_N,
+                        BLOCK_K=BLOCK_K,
+                    )
+
+        out._set_graph(parents=(self, other), backward_fn=_backward)
+        return out
+
     def add(self, other: "Tensor") -> "Tensor":
         """
         Elementwise addition: C = self + other

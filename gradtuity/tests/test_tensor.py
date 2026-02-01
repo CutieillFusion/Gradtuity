@@ -1080,6 +1080,138 @@ class TestTranspose4D:
 
 @pytest.mark.requires_cuda
 @pytest.mark.requires_triton
+class TestBMM:
+    """Tests for batched matrix multiplication (bmm)."""
+
+    def test_bmm_forward_rank3(self):
+        """BMM forward rank-3: (B, M, K) @ (B, K, N) vs NumPy."""
+        import numpy as np
+        np.random.seed(42)
+        B, M, K, N = 3, 4, 5, 2
+        a_np = np.random.randn(B, M, K).astype(np.float32)
+        b_np = np.random.randn(B, K, N).astype(np.float32)
+        expected = np.matmul(a_np, b_np)
+        a = Tensor(a_np.tolist())
+        b = Tensor(b_np.tolist())
+        y = a.bmm(b)
+        assert y.shape == (B, M, N)
+        flat_y = np.array(y.to_list()).ravel()
+        flat_expected = expected.ravel()
+        assert flat_y == pytest.approx(flat_expected, rel=0.01, abs=0.001)
+
+    def test_bmm_forward_rank4(self):
+        """BMM forward rank-4: (B, H, M, K) @ (B, H, K, N) vs NumPy."""
+        import numpy as np
+        np.random.seed(42)
+        B, H, M, K, N = 2, 3, 4, 5, 6
+        a_np = np.random.randn(B, H, M, K).astype(np.float32)
+        b_np = np.random.randn(B, H, K, N).astype(np.float32)
+        expected = np.matmul(a_np, b_np)
+        a = Tensor(a_np.tolist())
+        b = Tensor(b_np.tolist())
+        y = a.bmm(b)
+        assert y.shape == (B, H, M, N)
+        flat_y = np.array(y.to_list()).ravel()
+        flat_expected = expected.ravel()
+        # Float32 matmul accumulation can have ~1e-2 level error
+        assert flat_y == pytest.approx(flat_expected, rel=0.01, abs=0.01)
+
+    def test_bmm_backward_finite_difference(self):
+        """BMM backward: finite-difference gradient check (loose tolerance)."""
+        import numpy as np
+        eps = 1e-3
+        B, M, K, N = 2, 2, 3, 2
+        np.random.seed(123)
+        a_np = np.random.randn(B, M, K).astype(np.float32) * 0.5
+        b_np = np.random.randn(B, K, N).astype(np.float32) * 0.5
+        a = Tensor(a_np.tolist(), requires_grad=True)
+        b = Tensor(b_np.tolist(), requires_grad=True)
+        y = a.bmm(b)
+        loss = y.sum()
+        loss.backward()
+        # Numeric grad for a
+        grad_a_numeric = np.zeros_like(a_np)
+        for bi in range(B):
+            for i in range(M):
+                for j in range(K):
+                    a_plus = a_np.copy()
+                    a_plus[bi, i, j] += eps
+                    a_minus = a_np.copy()
+                    a_minus[bi, i, j] -= eps
+                    loss_plus = np.matmul(a_plus, b_np).sum()
+                    loss_minus = np.matmul(a_minus, b_np).sum()
+                    grad_a_numeric[bi, i, j] = (loss_plus - loss_minus) / (2.0 * eps)
+        grad_a = np.array(a.grad.to_list()).ravel()
+        assert grad_a == pytest.approx(grad_a_numeric.ravel(), rel=0.1, abs=0.05)
+        # Numeric grad for b
+        grad_b_numeric = np.zeros_like(b_np)
+        for bi in range(B):
+            for i in range(K):
+                for j in range(N):
+                    b_plus = b_np.copy()
+                    b_plus[bi, i, j] += eps
+                    b_minus = b_np.copy()
+                    b_minus[bi, i, j] -= eps
+                    loss_plus = np.matmul(a_np, b_plus).sum()
+                    loss_minus = np.matmul(a_np, b_minus).sum()
+                    grad_b_numeric[bi, i, j] = (loss_plus - loss_minus) / (2.0 * eps)
+        grad_b = np.array(b.grad.to_list()).ravel()
+        assert grad_b == pytest.approx(grad_b_numeric.ravel(), rel=0.1, abs=0.05)
+
+    def test_bmm_backward_accumulates(self):
+        """BMM backward accumulates when used twice (L = y1.sum() + y2.sum())."""
+        import numpy as np
+        B, M, K, N = 2, 2, 2, 2
+        data_a = [[[1.0, 0.5], [0.5, 1.0]], [[0.5, 1.0], [1.0, 0.5]]]
+        data_b = [[[1.0, 0.0], [0.0, 1.0]], [[0.5, 0.5], [0.5, 0.5]]]
+        a = Tensor(data_a, requires_grad=True)
+        b = Tensor(data_b, requires_grad=True)
+        y1 = a.bmm(b).sum()
+        y2 = a.bmm(b).sum()
+        loss = y1.add(y2)
+        loss.backward()
+        a_ref = Tensor(data_a, requires_grad=True)
+        b_ref = Tensor(data_b, requires_grad=True)
+        y_ref = a_ref.bmm(b_ref).sum()
+        y_ref.backward()
+        g_a = np.array(a.grad.to_list()).ravel()
+        g_a_ref = np.array(a_ref.grad.to_list()).ravel()
+        assert g_a == pytest.approx(2.0 * g_a_ref, rel=1e-5, abs=1e-6)
+        g_b = np.array(b.grad.to_list()).ravel()
+        g_b_ref = np.array(b_ref.grad.to_list()).ravel()
+        assert g_b == pytest.approx(2.0 * g_b_ref, rel=1e-5, abs=1e-6)
+
+    def test_bmm_rejects_ndim(self):
+        """bmm rejects ndim not 3 or 4."""
+        a2 = Tensor([[1.0, 2.0], [3.0, 4.0]])
+        b2 = Tensor([[1.0, 0.0], [0.0, 1.0]])
+        with pytest.raises(ValueError, match="ndim 3 or 4"):
+            a2.bmm(b2)
+
+    def test_bmm_rejects_mismatched_ndim(self):
+        """bmm requires same ndim for both tensors."""
+        a3 = Tensor([[[1.0, 2.0], [3.0, 4.0]]])  # (1,2,2)
+        b2 = Tensor([[1.0, 0.0], [0.0, 1.0]])
+        with pytest.raises(ValueError, match="same ndim"):
+            a3.bmm(b2)
+
+    def test_bmm_rejects_mismatched_batch(self):
+        """bmm rejects mismatched batch dimension."""
+        a = Tensor([[[1.0, 2.0]], [[3.0, 4.0]]])  # (2,1,2)
+        b = Tensor([[[1.0], [2.0]]])  # (1,2,1) - batch 1 vs 2
+        with pytest.raises(ValueError, match="batch"):
+            a.bmm(b)
+
+    def test_bmm_rejects_mismatched_inner(self):
+        """bmm rejects mismatched inner dimension (K)."""
+        a = Tensor([[[1.0, 2.0, 3.0]], [[4.0, 5.0, 6.0]]])  # (2,1,3) K=3
+        b = Tensor([[[1.0, 0.0], [0.0, 1.0]], [[0.5, 0.5], [0.5, 0.5]]])  # (2,2,2) K=2
+        with pytest.raises(ValueError, match="inner"):
+            a.bmm(b)
+
+
+@pytest.mark.requires_cuda
+@pytest.mark.requires_triton
 class TestAddReluIntegration:
     """Integration tests combining add and relu operations."""
 
