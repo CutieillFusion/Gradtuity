@@ -12,6 +12,7 @@ import triton
 
 from .cuda_mem import cuda_malloc, cuda_memset, cuda_memcpy_htod
 from .kernels.optim_kernels import fill_kernel, sgd_update_kernel
+from .kernels.one_hot_kernels import one_hot_kernel
 from .tensor import Tensor
 
 
@@ -156,6 +157,46 @@ def full_like(t: Tensor, fill_value: float, requires_grad: bool = False) -> Tens
         Tensor filled with fill_value, same shape as t.
     """
     return full(t.shape, fill_value, requires_grad=requires_grad)
+
+
+def one_hot(
+    labels,
+    num_classes: int,
+    on_value: float = 1.0,
+    off_value: float = -1.0,
+) -> Tensor:
+    """
+    One-hot encode labels on GPU. Output shape (B, num_classes) with on_value at the
+    label index and off_value elsewhere (default 1 and -1 for MSE).
+
+    Args:
+        labels: Tensor of shape (B,) float32 (class indices on GPU).
+        num_classes: Number of classes.
+        on_value: Value at the correct class index (default 1.0).
+        off_value: Value elsewhere (default -1.0 for MSE).
+
+    Returns:
+        Tensor of shape (B, num_classes), float32, no requires_grad.
+    """
+    if not isinstance(labels, Tensor):
+        raise ValueError(
+            f"one_hot labels must be a Tensor of shape (B,) float32, got {type(labels).__name__}"
+        )
+    labels_t = labels
+    B = labels_t.shape[0]
+    if len(labels_t.shape) != 1:
+        raise ValueError(f"one_hot labels must be 1D, got shape {labels_t.shape}")
+    out = Tensor._zeros((B, num_classes), requires_grad=False)
+    grid = (num_classes, B)
+    one_hot_kernel[grid](
+        labels_t.ptr,
+        out.ptr,
+        B=B,
+        num_classes=num_classes,
+        ON_VALUE=on_value,
+        OFF_VALUE=off_value,
+    )
+    return out
 
 
 # -------------------------------------------------------------------------

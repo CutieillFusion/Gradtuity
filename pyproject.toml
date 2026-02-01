@@ -1,7 +1,7 @@
 [project]
 name = "gradtuity"
 version = "0.1.0"
-description = "From-scratch tensor autodiff engine with Triton GPU kernels (CUDA, float32). Minimal PyTorch-like API for building and training small neural nets on GPU."
+description = "From-scratch tensor autograd engine with Triton GPU kernels (CUDA, float32). Minimal PyTorch-like API for building and training small neural nets on GPU."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -18,4 +18,12 @@ dev = [
     "scikit-learn>=1.8.0",
     "matplotlib>=3.10.8",
     "pandas>=3.0.0",
+]
+
+[tool.pytest.ini_options]
+markers = [
+    "requires_cuda: mark test as requiring CUDA runtime",
+    "requires_triton: mark test as requiring Triton (active CUDA GPU)",
+    "requires_nccl: mark test as requiring NCCL library",
+    "requires_multigpu: mark test as requiring at least 2 GPUs",
 ]

@@ -14,6 +14,7 @@ from .reduce_kernels import (
     sum_all_kernel,
     sum_axis0_kernel,
 )
+from .one_hot_kernels import one_hot_kernel
 
 __all__ = [
     # Elementwise
@@ -33,4 +34,6 @@ __all__ = [
     "adamw_step_kernel",
     "fill_kernel",
     "sgd_update_kernel",
+    # One-hot
+    "one_hot_kernel",
 ]

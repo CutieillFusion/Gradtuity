@@ -29,21 +29,15 @@ class Module:
         """
         Return a list of all trainable parameters in this module.
 
+        Order is deterministic (sorted state_dict key order) so that
+        distributed training (e.g. sync_grads) sees the same parameter
+        list on all ranks.
+
         Returns:
             List of Tensor objects with requires_grad=True.
         """
-        params = []
-        for attr_name in dir(self):
-            attr = getattr(self, attr_name)
-            if isinstance(attr, Tensor) and attr.requires_grad:
-                params.append(attr)
-            elif isinstance(attr, Module):
-                params.extend(attr.parameters())
-            elif isinstance(attr, list):
-                for item in attr:
-                    if isinstance(item, Module):
-                        params.extend(item.parameters())
-        return params
+        state = self.state_dict()
+        return [state[k] for k in sorted(state)]
 
     def zero_grad(self) -> None:
         """

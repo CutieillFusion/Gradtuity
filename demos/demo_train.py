@@ -3,7 +3,7 @@
 Gradtuity MLP Training Demo
 
 This demonstrates a complete training loop using the from-scratch
-tensor autodiff engine with Triton kernels.
+tensor autograd engine with Triton kernels.
 
 Forward: Z = relu(X @ W + b)
 Loss: loss = sum(Z)

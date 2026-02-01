@@ -15,6 +15,7 @@ from gradtuity.functional import (
     randn,
     full,
     full_like,
+    one_hot,
     zero_grad,
     sgd_step,
 )
@@ -389,3 +390,46 @@ class TestSgdStep:
     def test_sgd_step_empty_list(self):
         """Test that sgd_step with empty list is safe (no-op)."""
         sgd_step([], lr=0.1)
+
+
+@pytest.mark.requires_cuda
+@pytest.mark.requires_triton
+class TestOneHot:
+    """Tests for one_hot() function."""
+
+    def test_one_hot_default_1_minus1(self):
+        """Default 1/-1: labels [0,1,2], num_classes=3 -> rows [1,-1,-1], [-1,1,-1], [-1,-1,1]."""
+        labels = Tensor([0.0, 1.0, 2.0])
+        out = one_hot(labels, num_classes=3)
+        assert out.shape == (3, 3)
+        assert out.requires_grad is False
+        data = out.to_list()
+        assert data[0] == pytest.approx([1.0, -1.0, -1.0])
+        assert data[1] == pytest.approx([-1.0, 1.0, -1.0])
+        assert data[2] == pytest.approx([-1.0, -1.0, 1.0])
+
+    def test_one_hot_custom_on_off_value(self):
+        """Custom on_value=1.0, off_value=0.0."""
+        labels = Tensor([0.0, 1.0])
+        out = one_hot(labels, num_classes=3, on_value=1.0, off_value=0.0)
+        assert out.shape == (2, 3)
+        data = out.to_list()
+        assert data[0] == pytest.approx([1.0, 0.0, 0.0])
+        assert data[1] == pytest.approx([0.0, 1.0, 0.0])
+
+    def test_one_hot_shape_batch(self):
+        """Shape (B, num_classes)."""
+        labels = Tensor([1.0, 2.0, 0.0, 1.0])
+        out = one_hot(labels, num_classes=10)
+        assert out.shape == (4, 10)
+
+    def test_one_hot_rejects_non_tensor(self):
+        """one_hot labels must be a Tensor."""
+        with pytest.raises(ValueError, match="must be a Tensor"):
+            one_hot([0.0, 1.0, 2.0], num_classes=3)
+
+    def test_one_hot_rejects_2d_tensor_labels(self):
+        """one_hot labels Tensor must be 1D."""
+        labels_2d = Tensor([[0.0, 1.0], [2.0, 0.0]])  # 2D Tensor
+        with pytest.raises(ValueError, match="1D"):
+            one_hot(labels_2d, num_classes=3)

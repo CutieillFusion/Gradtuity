@@ -3,15 +3,14 @@
 Gradtuity MNIST Demo (MLP)
 
 This script demonstrates training an MLP on the MNIST handwritten digit dataset
-using Gradtuity's from-scratch tensor autodiff engine with Triton GPU kernels.
+using Gradtuity's from-scratch tensor autograd engine with Triton GPU kernels.
 
-Architecture: 784 -> 128 -> 64 -> 10 (flattened input)
+Architecture: MLP(FFN -> FFN -> FFN) (flattened input)
+Input: (N, 784). Output: (N, 10).
 Loss: MSE with one-hot encoded targets (+1 for correct class, -1 for others)
 
 Usage:
-    uv run python demos/demo_mnist.py
-
-For the CNN demo, run: uv run python demos/demo_mnist_cnn.py
+    uv run python demos/demo_mnist_mlp.py
 """
 
 import os
@@ -26,7 +25,7 @@ import numpy as np
 from sklearn.datasets import fetch_openml
 from sklearn.model_selection import train_test_split
 
-from gradtuity import MLP, SGD, Tensor
+from gradtuity import MLP, SGD, Tensor, one_hot
 
 # Create plots directory
 PLOT_DIR = os.path.join(os.path.dirname(__file__), "plots")
@@ -98,24 +97,10 @@ print()
 
 # Hyperparameters
 BATCH_SIZE = 64
-NUM_EPOCHS = 15
+NUM_EPOCHS = 10
 INITIAL_LR = 0.01
 
 optimizer = SGD(model.parameters(), lr=INITIAL_LR)
-
-
-def create_one_hot(labels, num_classes=10):
-    """
-    Create one-hot encoded targets with +1 for correct class, -1 for others.
-
-    This encoding works well with MSE loss for classification.
-    """
-    targets = []
-    for label in labels:
-        row = [-1.0] * num_classes
-        row[int(label)] = 1.0
-        targets.append(row)
-    return targets
 
 
 # -----------------------------------------------------------------------------
@@ -137,7 +122,7 @@ for i in range(num_train_batches):
     X_batch_np = X_train[start_idx:end_idx]
     y_batch_np = y_train[start_idx:end_idx]
     train_X_batches.append(Tensor(X_batch_np.tolist()))
-    train_Y_batches.append(Tensor(create_one_hot(y_batch_np)))
+    train_Y_batches.append(one_hot(Tensor(y_batch_np.astype(np.float32).tolist()), num_classes=10))
     train_Y_labels.append(y_batch_np)
 
 # Pre-create test batches as Tensors
@@ -198,14 +183,6 @@ start_time = time.time()
 for epoch in range(NUM_EPOCHS):
     epoch_start = time.time()
 
-    # Reset timing accumulators for this epoch
-    time_forward = 0.0
-    time_loss_calc = 0.0
-    time_zero_grad = 0.0
-    time_backward = 0.0
-    time_sgd = 0.0
-    time_accuracy = 0.0
-
     # Shuffle batch order (not individual samples, since data is pre-batched)
     batch_indices = np.random.permutation(num_train_batches)
 
@@ -223,50 +200,36 @@ for epoch in range(NUM_EPOCHS):
         y_labels = train_Y_labels[batch_idx]
 
         # --- Forward pass ---
-        t0 = time.perf_counter()
         scores = model(X_tensor)
-        time_forward += time.perf_counter() - t0
 
         # --- Loss calculation (fused MSE) ---
-        t0 = time.perf_counter()
         loss = scores.mse_loss(y_onehot)
-        time_loss_calc += time.perf_counter() - t0
 
         epoch_loss += loss.item()
 
         # --- Accuracy calculation (GPU argmax) ---
-        t0 = time.perf_counter()
         pred_indices = scores.argmax(dim=1)  # GPU argmax
         predictions = np.array(
             pred_indices.to_list(), dtype=int
         )  # Only 64 values transferred
         acc = (predictions == y_labels).mean()
         epoch_acc += acc
-        time_accuracy += time.perf_counter() - t0
 
         # --- Zero grad ---
-        t0 = time.perf_counter()
         optimizer.zero_grad()
-        time_zero_grad += time.perf_counter() - t0
 
         # --- Backward pass ---
-        t0 = time.perf_counter()
         loss.backward()
-        time_backward += time.perf_counter() - t0
 
         # --- SGD update ---
-        t0 = time.perf_counter()
         optimizer.step()
-        time_sgd += time.perf_counter() - t0
 
     # Average metrics
     avg_loss = epoch_loss / num_train_batches
     avg_acc = epoch_acc / num_train_batches
 
     # --- Test evaluation timing ---
-    t0 = time.perf_counter()
     test_acc = evaluate_preconverted()
-    time_eval = time.perf_counter() - t0
 
     train_losses.append(avg_loss)
     train_accuracies.append(avg_acc)
@@ -274,44 +237,8 @@ for epoch in range(NUM_EPOCHS):
 
     epoch_time = time.time() - epoch_start
     print(
-        f"Epoch {epoch + 1:2d}/{NUM_EPOCHS} | "
-        f"Loss: {avg_loss:.4f} | "
-        f"Train Acc: {avg_acc * 100:.1f}% | "
-        f"Test Acc: {test_acc * 100:.1f}% | "
-        f"LR: {lr:.4f} | "
-        f"Time: {epoch_time:.1f}s"
+        f"Epoch {epoch + 1:2d}/{NUM_EPOCHS} | Loss: {avg_loss:.4f} | Train Acc: {avg_acc * 100:.1f}% | Test Acc: {test_acc * 100:.1f}% | LR: {lr:.4f} | Time: {epoch_time:.1f}s"
     )
-
-    if TIMING_DEBUG:
-        total_train = (
-            time_forward
-            + time_loss_calc
-            + time_zero_grad
-            + time_backward
-            + time_sgd
-            + time_accuracy
-        )
-        print(
-            f"  Timing breakdown (train loop {total_train:.2f}s + eval {time_eval:.2f}s):"
-        )
-        print(
-            f"    Forward:     {time_forward:6.3f}s ({100 * time_forward / total_train:5.1f}%)"
-        )
-        print(
-            f"    Loss calc:   {time_loss_calc:6.3f}s ({100 * time_loss_calc / total_train:5.1f}%)"
-        )
-        print(
-            f"    Accuracy:    {time_accuracy:6.3f}s ({100 * time_accuracy / total_train:5.1f}%)"
-        )
-        print(
-            f"    Zero grad:   {time_zero_grad:6.3f}s ({100 * time_zero_grad / total_train:5.1f}%)"
-        )
-        print(
-            f"    Backward:    {time_backward:6.3f}s ({100 * time_backward / total_train:5.1f}%)"
-        )
-        print(
-            f"    SGD update:  {time_sgd:6.3f}s ({100 * time_sgd / total_train:5.1f}%)"
-        )
 
 total_time = time.time() - start_time
 print("-" * 60)
