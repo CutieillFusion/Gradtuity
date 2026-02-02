@@ -20,6 +20,11 @@ from .reduce_kernels import (
 from .layernorm_kernels import layernorm_bwd_kernel, layernorm_fwd_kernel
 from .one_hot_kernels import one_hot_kernel
 from .softmax_kernels import softmax_backward_kernel, softmax_forward_kernel
+from .mask_kernels import (
+    causal_mask_backward_kernel,
+    causal_mask_inplace_kernel,
+    transpose4d_12_kernel,
+)
 
 __all__ = [
     # Elementwise
@@ -50,4 +55,8 @@ __all__ = [
     # LayerNorm
     "layernorm_fwd_kernel",
     "layernorm_bwd_kernel",
+    # Mask / attention
+    "transpose4d_12_kernel",
+    "causal_mask_inplace_kernel",
+    "causal_mask_backward_kernel",
 ]

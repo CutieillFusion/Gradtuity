@@ -6,6 +6,7 @@ Provides high-level abstractions for building neural networks:
 - Linear: Fully connected layer (Y = X @ W + b)
 - Flatten: Reshape to 2D (batch, -1)
 - Embedding: Lookup table (row-gather) over learnable weight
+- CausalSelfAttention: Multi-head causal self-attention
 - Conv2d: 2D convolution
 - LayerNorm: Layer normalization over last dimension (gamma, beta)
 - MLP: Multi-layer perceptron
@@ -290,6 +291,92 @@ class Embedding(Module):
 
     def __repr__(self) -> str:
         return f"Embedding(num_embeddings={self.num_embeddings}, embedding_dim={self.embedding_dim})"
+
+
+class CausalSelfAttention(Module):
+    """
+    Multi-head causal self-attention (decoder-only, GPT-style).
+
+    Input (B, S, E), output (B, S, E). Position i cannot attend to j > i.
+    Uses separate Q, K, V projections and a single output projection.
+
+    Args:
+        embed_dim: Model dimension E (must equal input/output last dim).
+        num_heads: Number of attention heads (embed_dim must be divisible).
+    """
+
+    def __init__(self, embed_dim: int, num_heads: int) -> None:
+        if embed_dim <= 0 or num_heads <= 0:
+            raise ValueError("embed_dim and num_heads must be positive")
+        if embed_dim % num_heads != 0:
+            raise ValueError(
+                f"embed_dim ({embed_dim}) must be divisible by num_heads ({num_heads})"
+            )
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        self.scale = 1.0 / (self.head_dim**0.5)
+
+        # Xavier for Q, K, V, and output projections
+        std = (2.0 / (embed_dim + embed_dim)) ** 0.5
+        self.Wq = randn((embed_dim, embed_dim), requires_grad=True, std=std)
+        self.Wk = randn((embed_dim, embed_dim), requires_grad=True, std=std)
+        self.Wv = randn((embed_dim, embed_dim), requires_grad=True, std=std)
+        self.Wo = randn((embed_dim, embed_dim), requires_grad=True, std=std)
+        self.bq = zeros((embed_dim,), requires_grad=True)
+        self.bk = zeros((embed_dim,), requires_grad=True)
+        self.bv = zeros((embed_dim,), requires_grad=True)
+        self.bo = zeros((embed_dim,), requires_grad=True)
+
+    def __call__(self, x: Tensor) -> Tensor:
+        """
+        Forward: causal multi-head self-attention.
+
+        Args:
+            x: Input tensor of shape (B, S, E).
+
+        Returns:
+            Output tensor of shape (B, S, E).
+        """
+        B, S, E = x.shape
+        H = self.num_heads
+        D = self.head_dim
+        if E != self.embed_dim:
+            raise ValueError(
+                f"input last dim {E} must equal embed_dim {self.embed_dim}"
+            )
+
+        # Flatten to (B*S, E) for 2D linear
+        x_flat = x.view((B * S, E))
+        q_flat = x_flat.linear(self.Wq, self.bq)
+        k_flat = x_flat.linear(self.Wk, self.bk)
+        v_flat = x_flat.linear(self.Wv, self.bv)
+        q = q_flat.view((B, S, E)).view((B, S, H, D)).transpose4d_12()
+        k = k_flat.view((B, S, E)).view((B, S, H, D)).transpose4d_12()
+        v = v_flat.view((B, S, E)).view((B, S, H, D)).transpose4d_12()
+        # q, k, v: (B, H, S, D)
+
+        scores = q.bmm(k.transpose4d_last2())
+        scores = scores.scale(self.scale)
+        scores = scores.apply_causal_mask()
+        attn = scores.softmax(dim=-1)
+        ctx = attn.bmm(v)
+        # ctx: (B, H, S, D)
+        ctx = ctx.transpose4d_12().view((B, S, E))
+        ctx_flat = ctx.view((B * S, E))
+        out_flat = ctx_flat.linear(self.Wo, self.bo)
+        return out_flat.view((B, S, E))
+
+    def parameters(self) -> list[Tensor]:
+        return [
+            self.Wq, self.Wk, self.Wv, self.Wo,
+            self.bq, self.bk, self.bv, self.bo,
+        ]
+
+    def __repr__(self) -> str:
+        return (
+            f"CausalSelfAttention(embed_dim={self.embed_dim}, num_heads={self.num_heads})"
+        )
 
 
 class Conv2d(Module):

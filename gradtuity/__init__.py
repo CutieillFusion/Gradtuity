@@ -15,6 +15,7 @@ from .functional import (
 )
 from .nn import (
     CNN,
+    CausalSelfAttention,
     Conv2d,
     Embedding,
     Flatten,
@@ -43,6 +44,7 @@ __all__ = [
     "Linear",
     "Flatten",
     "Embedding",
+    "CausalSelfAttention",
     "Conv2d",
     "MaxPool2d",
     "LayerNorm",

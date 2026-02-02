@@ -80,6 +80,11 @@ from .kernels.gather_kernels import (
     embedding_gather_kernel,
     embedding_scatter_add_kernel,
 )
+from .kernels.mask_kernels import (
+    causal_mask_backward_kernel,
+    causal_mask_inplace_kernel,
+    transpose4d_12_kernel,
+)
 # tensor_io imported lazily in save()/load() to avoid circular import with tensor_io -> tensor
 
 # -------------------------------------------------------------------------
@@ -1167,6 +1172,99 @@ class Tensor:
             if x.requires_grad:
                 # Inverse of swap last two is same op: grad has shape (B,H,D,S), transpose -> (B,H,S,D)
                 accum_grad(x, g.detach().transpose4d_last2())
+
+        out._set_graph(parents=(self,), backward_fn=_backward)
+        return out
+
+    def transpose4d_12(self) -> "Tensor":
+        """
+        Transpose axes 1 and 2 of a 4D tensor: (B, A, C, D) -> (B, C, A, D).
+
+        Rank must be 4. Allocates a new contiguous tensor. Backward is the same
+        transpose (inverse is itself).
+
+        Returns:
+            Tensor of shape (B, C, A, D).
+        """
+        if self.ndim != 4:
+            raise ValueError(
+                f"transpose4d_12 requires ndim=4, got ndim={self.ndim}"
+            )
+        B, A, C, D = self.shape
+        out_shape = (B, C, A, D)
+        out = empty_tensor(out_shape)
+        numel = B * A * C * D
+        transpose4d_12_kernel[grid1d(numel)](
+            self.ptr,
+            out.ptr,
+            B=B,
+            A=A,
+            C=C,
+            D=D,
+            BLOCK=BLOCK,
+        )
+
+        x = self
+
+        def _backward(g: Tensor) -> None:
+            if x.requires_grad:
+                accum_grad(x, g.detach().transpose4d_12())
+
+        out._set_graph(parents=(self,), backward_fn=_backward)
+        return out
+
+    def apply_causal_mask(self, neg_inf: float = -1e9) -> "Tensor":
+        """
+        Apply causal mask: copy tensor and set upper-triangular (j > i) to neg_inf.
+
+        For 4D scores (B, H, S, S), position (i, j) is masked when j > i.
+        Returns a new tensor; backward zeros gradients at masked positions.
+
+        Args:
+            neg_inf: Value to write for masked positions (default -1e9).
+
+        Returns:
+            New tensor of same shape with causal mask applied.
+        """
+        if self.ndim != 4:
+            raise ValueError(
+                f"apply_causal_mask requires ndim=4, got ndim={self.ndim}"
+            )
+        B, H, S, S_last = self.shape
+        if S != S_last:
+            raise ValueError(
+                f"apply_causal_mask requires square last two dims, got shape {self.shape}"
+            )
+        out = empty_tensor(self.shape)
+        cuda_memcpy_dtod(out.ptr, self.ptr, self.numel * F32)
+        BLOCK_I = 32
+        BLOCK_J = 32
+        causal_mask_inplace_kernel[
+            (B * H, triton.cdiv(S, BLOCK_I), triton.cdiv(S, BLOCK_J))
+        ](
+            out.ptr,
+            B=B,
+            H=H,
+            S=S,
+            NEG_INF=neg_inf,
+            BLOCK_I=BLOCK_I,
+            BLOCK_J=BLOCK_J,
+        )
+
+        input_tensor = self
+
+        def _backward(g: Tensor) -> None:
+            if input_tensor.requires_grad:
+                grad_tmp = empty_tensor(self.shape)
+                causal_mask_backward_kernel[grid1d(B * H * S * S)](
+                    g.ptr,
+                    grad_tmp.ptr,
+                    B=B,
+                    H=H,
+                    S=S,
+                    BLOCK=BLOCK,
+                )
+                accum_grad(input_tensor, grad_tmp)
 
         out._set_graph(parents=(self,), backward_fn=_backward)
         return out
