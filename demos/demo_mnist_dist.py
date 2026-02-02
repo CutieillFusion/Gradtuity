@@ -46,12 +46,13 @@ from gradtuity.dist import (
     get_rank,
     get_world_size,
     distributed_indices,
+    print_rank,
 )
 
 init()
 rank = get_rank()
 world_size = get_world_size()
-is_main = rank == 0
+is_rank_0 = rank == 0
 
 # Create plots directory (CNN-specific subdir or prefix)
 PLOT_DIR = os.path.join(os.path.dirname(__file__), "plots")
@@ -62,17 +63,16 @@ PLOT_PREFIX = "mnist_dist_cnn_"  # e.g. mnist_dist_cnn_1_samples.png
 np.random.seed(42)
 random.seed(42)
 
-if is_main:
-    print("=" * 60)
-    print("Gradtuity MNIST Multi-GPU Demo (CNN w/DDP)")
-    print("=" * 60)
-    print()
+# This will only print on rank 0 (by Default)
+print_rank("=" * 60)
+print_rank("Gradtuity MNIST Multi-GPU Demo (CNN w/DDP)")
+print_rank("=" * 60)
+print_rank("")
 
 # -----------------------------------------------------------------------------
 # Load MNIST Dataset
 # -----------------------------------------------------------------------------
-if is_main:
-    print("Loading MNIST dataset...")
+print_rank("Loading MNIST dataset...")
 start_time = time.time()
 
 mnist = fetch_openml("mnist_784", version=1, as_frame=False, parser="auto")
@@ -83,13 +83,12 @@ X_train, X_test, y_train, y_test = train_test_split(
     X_all, y_all, train_size=60000, test_size=10000, random_state=42, stratify=y_all
 )
 
-if is_main:
-    print(f"Loaded in {time.time() - start_time:.1f}s")
-    print(f"Training samples: {len(X_train)}")
-    print(f"Test samples: {len(X_test)}")
-    print(f"Input shape for CNN: (batch, 1, 28, 28)")
-    print(f"Classes: 0-9 (10 digits)")
-    print()
+print_rank(f"Loaded in {time.time() - start_time:.1f}s")
+print_rank(f"Training samples: {len(X_train)}")
+print_rank(f"Test samples: {len(X_test)}")
+print_rank(f"Input shape for CNN: (batch, 1, 28, 28)")
+print_rank(f"Classes: 0-9 (10 digits)")
+print_rank("")
 
 # Visualize some samples
 fig, axes = plt.subplots(2, 5, figsize=(10, 4))
@@ -101,22 +100,20 @@ plt.suptitle("Sample MNIST Images (CNN Demo)")
 plt.tight_layout()
 plt.savefig(os.path.join(PLOT_DIR, f"{PLOT_PREFIX}1_samples.png"), dpi=150)
 plt.close()
-print(f"Saved: {PLOT_DIR}/{PLOT_PREFIX}1_samples.png")
+print_rank(f"Saved: {PLOT_DIR}/{PLOT_PREFIX}1_samples.png")
 
 # -----------------------------------------------------------------------------
 # Create Model
 # -----------------------------------------------------------------------------
-if is_main:
-    print()
-    print("Creating CNN model...")
+print_rank("")
+print_rank("Creating CNN model...")
 
 model = CNN()
 init_sync(model)
-if is_main:
-    print(model)
-    num_params = sum(p.numel for p in model.parameters())
-    print(f"Number of parameters: {num_params:,}")
-    print()
+print_rank(model)
+num_params = sum(p.numel for p in model.parameters())
+print_rank(f"Number of parameters: {num_params:,}")
+print_rank("")
 
 # -----------------------------------------------------------------------------
 # Training Setup
@@ -124,7 +121,7 @@ if is_main:
 
 BATCH_SIZE = 64
 NUM_EPOCHS = 10
-INITIAL_LR = 0.01
+INITIAL_LR = 0.01 * world_size ** 0.5
 
 optimizer = SGD(model.parameters(), lr=INITIAL_LR)
 
@@ -132,12 +129,11 @@ optimizer = SGD(model.parameters(), lr=INITIAL_LR)
 # -----------------------------------------------------------------------------
 # Pre-convert data to Tensors (4D for CNN)
 # -----------------------------------------------------------------------------
-if is_main:
-    print("Pre-converting data to Tensors (4D for CNN)...")
+print_rank("Pre-converting data to Tensors (4D for CNN)...")
 preconv_start = time.time()
 
 train_indices = list(distributed_indices(len(X_train)))
-num_train_batches = max(1, len(train_indices) // 64)
+num_train_batches = max(1, len(train_indices) // BATCH_SIZE)
 train_X_batches = []
 train_Y_batches = []
 train_Y_labels = []
@@ -169,11 +165,10 @@ for i in range(num_test_batches):
     test_X_batches.append(Tensor(X_batch.tolist()))
     test_Y_labels.append(y_batch)
 
-if is_main:
-    print(
-        f"Pre-converted {num_train_batches} train batches + {num_test_batches} test batches in {time.time() - preconv_start:.1f}s"
-    )
-    print()
+print_rank(
+    f"Pre-converted {num_train_batches} train batches + {num_test_batches} test batches in {time.time() - preconv_start:.1f}s"
+)
+print_rank("")
 
 
 def evaluate_preconverted():
@@ -191,9 +186,8 @@ def evaluate_preconverted():
 # -----------------------------------------------------------------------------
 # Training Loop
 # -----------------------------------------------------------------------------
-if is_main:
-    print("Training...")
-    print("-" * 60)
+print_rank("Training...")
+print_rank("-" * 60)
 
 train_losses = []
 train_accuracies = []
@@ -234,22 +228,19 @@ for epoch in range(NUM_EPOCHS):
     train_accuracies.append(avg_acc)
     test_accuracies.append(test_acc)
     epoch_time = time.time() - epoch_start
-    if is_main:
-        print(
-            f"Epoch {epoch + 1:2d}/{NUM_EPOCHS} | Loss: {avg_loss:.4f} | Train Acc: {avg_acc * 100:.1f}% | Test Acc: {test_acc * 100:.1f}% | LR: {lr:.4f} | Time: {epoch_time:.1f}s"
-        )
+    print_rank(
+        f"Epoch {epoch + 1:2d}/{NUM_EPOCHS} | Loss: {avg_loss:.4f} | Train Acc: {avg_acc * 100:.1f}% | Test Acc: {test_acc * 100:.1f}% | LR: {lr:.4f} | Time: {epoch_time:.1f}s"
+    )
 
 total_time = time.time() - start_time
-if is_main:
-    print("-" * 60)
-    print(f"Training complete in {total_time:.1f}s")
-    print()
+print_rank("-" * 60)
+print_rank(f"Training complete in {total_time:.1f}s")
+print_rank("")
 
 # -----------------------------------------------------------------------------
 # Final Evaluation
 # -----------------------------------------------------------------------------
-if is_main:
-    print("Final Evaluation:")
+print_rank("Final Evaluation:")
 
 
 def evaluate_train_preconverted():
@@ -266,15 +257,14 @@ def evaluate_train_preconverted():
 
 final_train_acc = evaluate_train_preconverted()
 final_test_acc = evaluate_preconverted()
-if is_main:
-    print(f"  Train Accuracy: {final_train_acc * 100:.2f}%")
-    print(f"  Test Accuracy:  {final_test_acc * 100:.2f}%")
-    print()
+print_rank(f"  Train Accuracy: {final_train_acc * 100:.2f}%")
+print_rank(f"  Test Accuracy:  {final_test_acc * 100:.2f}%")
+print_rank("")
 
 # -----------------------------------------------------------------------------
 # Visualization
 # -----------------------------------------------------------------------------
-if is_main:
+if is_rank_0:
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
     ax1.plot(range(1, NUM_EPOCHS + 1), train_losses, "b-", linewidth=2)
     ax1.set_xlabel("Epoch")
@@ -303,7 +293,7 @@ if is_main:
     plt.tight_layout()
     plt.savefig(os.path.join(PLOT_DIR, f"{PLOT_PREFIX}2_training.png"), dpi=150)
     plt.close()
-    print(f"Saved: {PLOT_DIR}/{PLOT_PREFIX}2_training.png")
+    print_rank(f"Saved: {PLOT_DIR}/{PLOT_PREFIX}2_training.png")
 
     # Sample predictions (4D input for CNN)
     fig, axes = plt.subplots(3, 5, figsize=(12, 8))
@@ -323,10 +313,10 @@ if is_main:
     plt.tight_layout()
     plt.savefig(os.path.join(PLOT_DIR, f"{PLOT_PREFIX}3_predictions.png"), dpi=150)
     plt.close()
-    print(f"Saved: {PLOT_DIR}/{PLOT_PREFIX}3_predictions.png")
+    print_rank(f"Saved: {PLOT_DIR}/{PLOT_PREFIX}3_predictions.png")
 
-    print()
-    print("Per-class accuracy (CNN):")
+    print_rank()
+    print_rank("Per-class accuracy (CNN):")
     for digit in range(10):
         mask = y_test == digit
         if mask.sum() > 0:
@@ -338,10 +328,10 @@ if is_main:
             pred_indices = scores.argmax(dim=1)
             preds = np.array(pred_indices.to_list(), dtype=int)
             acc = (preds == y_digit).mean()
-            print(f"  Digit {digit}: {acc * 100:.1f}% ({mask.sum()} samples)")
+            print_rank(f"  Digit {digit}: {acc * 100:.1f}% ({mask.sum()} samples)")
 
-    print()
-    print("=" * 60)
-    print("CNN demo complete!")
-    print(f"Final test accuracy: {final_test_acc * 100:.2f}%")
-    print("=" * 60)
+    print_rank()
+    print_rank("=" * 60)
+    print_rank("CNN demo complete!")
+    print_rank(f"Final test accuracy: {final_test_acc * 100:.2f}%")
+    print_rank("=" * 60)

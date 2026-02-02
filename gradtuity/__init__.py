@@ -36,6 +36,7 @@ from .random import (
 )
 from .optim import AdamW, Optimizer, SGD, clip_grad_norm_
 from .tensor_io import load_safetensors, save_safetensors
+from .tokenizer import Tokenizer
 
 __all__ = [
     "Tensor",
@@ -72,4 +73,5 @@ __all__ = [
     "default_rng",
     "dropout_rng_state_dict",
     "load_dropout_rng_state",
+    "Tokenizer",
 ]

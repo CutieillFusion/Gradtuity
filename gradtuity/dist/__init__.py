@@ -55,6 +55,11 @@ def init_sync(model_or_params, *, src: int = 0, sync_buffers: bool = True, bucke
     _init_sync.init_sync(model_or_params, src=src, sync_buffers=sync_buffers, bucket_mb=bucket_mb, strict=strict)
 
 
+def print_rank(message: str = "", ranks: list[int] = [0], **kwargs: dict) -> None:
+    """Print a message from the current rank if it is in the list of ranks."""
+    if get_rank() in ranks:
+        print(message, **kwargs)
+
 # Sampler
 distributed_indices = sampler.distributed_indices
 shard_size = sampler.shard_size
@@ -73,4 +78,5 @@ __all__ = [
     "barrier",
     "distributed_indices",
     "shard_size",
+    "print_rank",
 ]
