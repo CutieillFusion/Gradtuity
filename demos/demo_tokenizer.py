@@ -10,68 +10,60 @@ Usage:
 """
 
 import os
+import sys
 
 from gradtuity import Tokenizer
 
+print("=" * 60)
+print("Gradtuity Tokenizer Demo")
+print("=" * 60)
+print()
 
-def main():
-    print("=" * 60)
-    print("Gradtuity Tokenizer Demo")
-    print("=" * 60)
-    print()
+vocab_path = "demos/tokenizer/vocab.json"
+merges_path = "demos/tokenizer/merges.txt"
 
-    vocab_path = "demos/tokenizer/vocab.json"
-    merges_path = "demos/tokenizer/merges.txt"
-    print(f"Paths:")
-    print(f"  vocab:  {vocab_path}")
-    print(f"  merges: {merges_path}")
-    print()
+if not os.path.isfile(vocab_path):
+    print(f"ERROR: vocab file not found at {vocab_path}.")
+    sys.exit(1)
+if not os.path.isfile(merges_path):
+    print(f"ERROR: merges file not found at {merges_path}.")
+    sys.exit(1)
 
-    if not os.path.isfile(vocab_path):
-        print(f"ERROR: vocab file not found at {vocab_path}.")
-        return
-    if not os.path.isfile(merges_path):
-        print(f"ERROR: merges file not found at {merges_path}.")
-        return
+print("Loading tokenizer...")
+tok = Tokenizer.from_files(vocab_path, merges_path)
+print(f"  vocab_size: {tok.vocab_size}")
+print()
 
-    print("Loading tokenizer...")
-    tok = Tokenizer.from_files(vocab_path, merges_path)
-    print(f"  vocab_size: {tok.vocab_size}")
-    print()
+examples = [
+    "".join(chr(i) for i in range(32, 127)), # All printable ASCII characters
+    "encode → ids → decode", # Special characters (→)
+    "€50 • £30 • ¥100",
+    "日本語",
+    "α → β ⇒ γ",
+]
 
-    examples = [
-        "Hello, world!",
-        "The quick brown fox jumps over the lazy dog.",
-        "encode → ids → decode",
-    ]
-
-    print("Encode / Decode examples:")
-    print("-" * 60)
-    for text in examples:
-        ids = tok.encode(text)
-        decoded = tok.decode(ids)
-        round_trip = "OK" if decoded == text else "DIFF"
-        print(f"  input:  {text!r}")
-        print(f"  ids:    {ids[:20]}{'...' if len(ids) > 20 else ''} (len={len(ids)})")
-        print(f"  decode: {decoded!r} [{round_trip}]")
-        print()
-
-    print("LM training slice (input_ids = ids[:-1], labels = ids[1:]):")
-    print("-" * 60)
-    text = "Hello World, This project is awesome!"
+print("Encode / Decode examples:")
+print("-" * 60)
+for text in examples:
     ids = tok.encode(text)
-    input_ids = ids[:-1]
-    labels = ids[1:]
-    print(f"  text:       {text!r}")
-    print(f"  ids:        {ids}")
-    print(f"  input_ids:  {input_ids}")
-    print(f"  labels:     {labels}")
+    decoded = tok.decode(ids)
+    print(f"  input:  {text!r}")
+    print(f"  ids:    {ids[:20]}{'...' if len(ids) > 20 else ''} (len={len(ids)})")
+    print(f"  decode: {decoded!r}")
     print()
 
-    print("=" * 60)
-    print("Demo complete!")
-    print("=" * 60)
+print("LM training slice (input_ids = ids[:-1], labels = ids[1:]):")
+print("-" * 60)
+text = "Hello World, This project is awesome!"
+ids = tok.encode(text)
+input_ids = ids[:-1]
+labels = ids[1:]
+print(f"  text:       {text!r}")
+print(f"  ids:        {ids}")
+print(f"  input_ids:  {input_ids}")
+print(f"  labels:     {labels}")
+print()
 
-
-if __name__ == "__main__":
-    main()
+print("=" * 60)
+print("Demo complete!")
+print("=" * 60)

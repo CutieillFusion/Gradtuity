@@ -14,9 +14,10 @@ from .bpe import apply_bpe, parse_merges_lines
 from .bytes import get_byte_decoder, get_byte_encoder
 
 # Pre-tokenization: split into pieces (contractions, letters, numbers, other, whitespace).
-# Stdlib re only; ASCII-oriented approximation (letters/digits via [a-zA-Z], [0-9]).
+# Stdlib re only; ASCII-oriented approximation (letters/underscore via [a-zA-Z_], digits via [0-9]).
 _PAT = re.compile(
-    r"""'s|'t|'re|'ve|'m|'ll|'d| ?[a-zA-Z]+| ?[0-9]+| ?[^\s\w]+|\s+(?!\S)|\s+"""
+    r"""'s|'t|'re|'ve|'m|'ll|'d| ?[a-zA-Z_]+| ?[0-9]+| ?[^\s\w]+|\s+(?!\S)|\s+""",
+    re.ASCII,
 )
 
 

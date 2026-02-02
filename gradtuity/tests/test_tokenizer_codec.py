@@ -63,11 +63,55 @@ class TestToyCodec:
         assert ids == [7]
 
 
+VOCAB_PATH = "gradtuity/tests/tokenizer/vocab.json"
+MERGES_PATH = "gradtuity/tests/tokenizer/merges.txt"
+
+
+@pytest.fixture
+def real_tokenizer():
+    """Load tokenizer once for tests that use real artifacts."""
+    return Tokenizer.from_files(VOCAB_PATH, MERGES_PATH)
+
+
 class TestRealArtifactsOptional:
     """Tests with real artifacts from the GPT-2 tokenizer."""
-    def test_vocab_size_and_round_trip_hello(self):
-        vocab_path = "gradtuity/tests/tokenizer/vocab.json"
-        merges_path = "gradtuity/tests/tokenizer/merges.txt"
-        tok = Tokenizer.from_files(vocab_path, merges_path)
-        assert tok.vocab_size == 50257
-        assert tok.decode(tok.encode("Hello")) == "Hello"
+
+    @pytest.mark.parametrize(
+        "text",
+        ["", "   ", "\t\n", " ", "a"],
+        ids=["empty", "spaces", "tab_newline", "single_space", "single_letter"],
+    )
+    def test_round_trip_edge_cases(self, real_tokenizer, text):
+        assert real_tokenizer.decode(real_tokenizer.encode(text)) == text
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "encode → ids → decode",
+            "café, naïve, naïve",
+            "Señor Niño",
+            "€50 • £30 • ¥100",
+            "… — “quoted” — …",
+            "München, Zürich",
+            "日本語",
+            "α → β ⇒ γ",
+        ],
+        ids=[
+            "arrow_phrase",
+            "accented_e_naive",
+            "spanish_n_tilde",
+            "currency_bullet",
+            "ellipsis_em_dash_quotes",
+            "umlaut_cities",
+            "japanese",
+            "greek_arrows",
+        ],
+    )
+    def test_no_character_drop_invariant(self, real_tokenizer, text):
+        """Decode(encode(text)) == text for strings with non-ASCII characters."""
+        assert real_tokenizer.decode(real_tokenizer.encode(text)) == text
+
+    @pytest.mark.parametrize("c", [chr(i) for i in range(32, 127)])
+    def test_round_trip_each_printable_ascii_char(self, real_tokenizer, c):
+        """Each printable ASCII character round-trips alone."""
+        assert real_tokenizer.decode(real_tokenizer.encode(c)) == c
