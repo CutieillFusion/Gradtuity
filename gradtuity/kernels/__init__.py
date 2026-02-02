@@ -25,6 +25,10 @@ from .mask_kernels import (
     causal_mask_inplace_kernel,
     transpose4d_12_kernel,
 )
+from .dropout_kernels import (
+    dropout_forward_kernel,
+    dropout_backward_kernel,
+)
 
 __all__ = [
     # Elementwise
@@ -59,4 +63,6 @@ __all__ = [
     "transpose4d_12_kernel",
     "causal_mask_inplace_kernel",
     "causal_mask_backward_kernel",
+    "dropout_forward_kernel",
+    "dropout_backward_kernel",
 ]

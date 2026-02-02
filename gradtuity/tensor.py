@@ -85,6 +85,12 @@ from .kernels.mask_kernels import (
     causal_mask_inplace_kernel,
     transpose4d_12_kernel,
 )
+from .kernels.dropout_kernels import (
+    dropout_forward_kernel,
+    dropout_backward_kernel,
+)
+from .random import default_rng
+from .random import DropoutRNG
 # tensor_io imported lazily in save()/load() to avoid circular import with tensor_io -> tensor
 
 # -------------------------------------------------------------------------
@@ -1587,6 +1593,103 @@ class Tensor:
         out._set_graph(parents=(self, weight, bias), backward_fn=_backward)
         return out
 
+    def linear_tied(self, weight: "Tensor") -> "Tensor":
+        """
+        Linear with tied weight (no bias): Y = X @ W^T.
+
+        Weight is stored (V, E); interpreted as W^T (E, V) for matmul.
+        Used for LM head tied to embedding: logits = h @ wte.weight.T.
+
+        Args:
+            weight: Weight matrix of shape (out_features, in_features) e.g. (V, E).
+
+        Returns:
+            Output tensor of shape (batch, out_features) e.g. (M, V).
+        """
+        if self.ndim != 2:
+            raise ValueError(f"linear_tied requires 2D input, got shape {self._shape}")
+        if weight.ndim != 2:
+            raise ValueError(f"weight must be 2D, got shape {weight._shape}")
+        if self._shape[1] != weight._shape[1]:
+            raise ValueError(
+                f"linear_tied shape mismatch: input last dim {self._shape[1]} != weight last dim {weight._shape[1]}"
+            )
+        M, E = self._shape
+        V, E2 = weight._shape
+        assert E == E2
+        N = V
+        K = E
+        out_shape = (M, N)
+        out = empty_tensor(out_shape)
+        BLOCK_M = 32
+        BLOCK_N = 32
+        BLOCK_K = 32
+        grid = (triton.cdiv(M, BLOCK_M), triton.cdiv(N, BLOCK_N))
+        matmul_kernel[grid](
+            self.ptr,
+            weight.ptr,
+            out.ptr,
+            M,
+            N,
+            K,
+            E,
+            1,
+            1,
+            E,
+            N,
+            1,
+            BLOCK_M=BLOCK_M,
+            BLOCK_N=BLOCK_N,
+            BLOCK_K=BLOCK_K,
+        )
+        x_tensor = self
+        w_tensor = weight
+
+        def _backward(out_grad: Tensor) -> None:
+            if x_tensor.requires_grad:
+                ensure_grad(x_tensor)
+                grid_dx = (triton.cdiv(M, BLOCK_M), triton.cdiv(K, BLOCK_N))
+                matmul_nt_acc_kernel[grid_dx](
+                    out_grad.ptr,
+                    w_tensor.ptr,
+                    x_tensor.grad.ptr,
+                    M,
+                    K,
+                    N,
+                    N,
+                    1,
+                    1,
+                    E,
+                    K,
+                    1,
+                    BLOCK_M=BLOCK_M,
+                    BLOCK_N=BLOCK_N,
+                    BLOCK_K=BLOCK_K,
+                )
+            if w_tensor.requires_grad:
+                ensure_grad(w_tensor)
+                grid_dw = (triton.cdiv(N, BLOCK_M), triton.cdiv(K, BLOCK_N))
+                matmul_tn_acc_kernel[grid_dw](
+                    out_grad.ptr,
+                    x_tensor.ptr,
+                    w_tensor.grad.ptr,
+                    N,
+                    K,
+                    M,
+                    N,
+                    1,
+                    E,
+                    1,
+                    K,
+                    1,
+                    BLOCK_M=BLOCK_M,
+                    BLOCK_N=BLOCK_N,
+                    BLOCK_K=BLOCK_K,
+                )
+
+        out._set_graph(parents=(self, weight), backward_fn=_backward)
+        return out
+
     def linear_relu(self, weight: "Tensor", bias: "Tensor") -> "Tensor":
         """
         Fused linear layer with ReLU: Y = relu(X @ W + b)
@@ -2202,6 +2305,70 @@ class Tensor:
         mul_scalar_inplace_kernel[grid1d(self.numel)](
             self.ptr, scalar, self.numel, BLOCK=BLOCK
         )
+
+    def dropout(
+        self,
+        p: float,
+        training: bool = True,
+        rng: DropoutRNG | None = None,
+    ) -> "Tensor":
+        """
+        Inverted dropout: y = x * mask / (1-p) in train, y = x in eval.
+
+        Mask is regenerated in backward from (seed, offset) so no large mask storage.
+        No-op if training=False or p==0 (returns self). If p>=1 returns zeros.
+
+        Args:
+            p: Drop probability (keep with prob 1-p).
+            training: If False, return input unchanged.
+            rng: DropoutRNG for deterministic mask; uses default_rng() if None.
+
+        Returns:
+            Output tensor (same shape as self).
+        """
+        if not training or p == 0.0:
+            return self
+        if p >= 1.0:
+            return Tensor._zeros(self.shape, requires_grad=self.requires_grad)
+        rng_inst = rng if rng is not None else default_rng()
+        n = self.numel
+        offset = rng_inst.counter
+        rng_inst.advance(n)
+        seed_val = int(rng_inst.seed) & 0x7FFFFFFF
+        offset_val = int(offset) & 0x7FFFFFFF
+
+        out = empty_tensor(self.shape)
+        dropout_forward_kernel[grid1d(n)](
+            self.ptr,
+            out.ptr,
+            n=n,
+            p=p,
+            seed=seed_val,
+            offset=offset_val,
+            BLOCK=BLOCK,
+        )
+
+        input_tensor = self
+        p_captured = p
+        seed_captured = seed_val
+        offset_captured = offset_val
+        n_captured = n
+
+        def _backward(out_grad: Tensor) -> None:
+            if input_tensor.requires_grad:
+                ensure_grad(input_tensor)
+                dropout_backward_kernel[grid1d(n_captured)](
+                    input_tensor.grad.ptr,
+                    out_grad.ptr,
+                    n=n_captured,
+                    p=p_captured,
+                    seed=seed_captured,
+                    offset=offset_captured,
+                    BLOCK=BLOCK,
+                )
+
+        out._set_graph(parents=(self,), backward_fn=_backward)
+        return out
 
     # -------------------------------------------------------------------------
     # Operator overloads
