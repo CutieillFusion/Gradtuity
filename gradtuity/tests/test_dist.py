@@ -515,7 +515,10 @@ class TestInitSyncStrictMismatch:
                     content1 = f.read()
                 combined_stderr = err0 + err1
                 combined_out = content0 + content1
-                assert "strict check failed" in combined_stderr or "strict check failed" in combined_out, (
+                assert (
+                    "strict check failed" in combined_stderr
+                    or "strict check failed" in combined_out
+                ), (
                     f"Expected 'strict check failed' in stderr or outfile; ret0={ret0} ret1={ret1} "
                     f"stderr0={err0!r} stderr1={err1!r} out0={content0!r} out1={content1!r}"
                 )

@@ -5,7 +5,9 @@ Provides high-level abstractions for building neural networks:
 - Module: Base class for all neural network modules
 - Linear: Fully connected layer (Y = X @ W + b)
 - Flatten: Reshape to 2D (batch, -1)
+- Embedding: Lookup table (row-gather) over learnable weight
 - Conv2d: 2D convolution
+- LayerNorm: Layer normalization over last dimension (gamma, beta)
 - MLP: Multi-layer perceptron
 """
 
@@ -13,7 +15,7 @@ from __future__ import annotations
 
 import math
 
-from .functional import randn, zero_grad, zeros
+from .functional import ones, randn, zero_grad, zeros
 from .tensor import Tensor
 
 
@@ -238,6 +240,58 @@ class Flatten(Module):
         return f"Flatten(start_dim={self.start_dim})"
 
 
+class Embedding(Module):
+    """
+    Lookup table (embedding) layer: out = weight[indices].
+
+    Owns a single parameter weight of shape (num_embeddings, embedding_dim).
+    Forward is row-gather: out[n, d] = weight[int(indices[n]), d].
+
+    Args:
+        num_embeddings: Size of the dictionary (vocabulary size).
+        embedding_dim: Size of each embedding vector.
+
+    Attributes:
+        weight: Learnable weight matrix of shape (num_embeddings, embedding_dim).
+    """
+
+    def __init__(self, num_embeddings: int, embedding_dim: int) -> None:
+        """
+        Initialize an Embedding layer.
+
+        Weight is initialized with randn and std=1/sqrt(embedding_dim).
+
+        Args:
+            num_embeddings: Number of embeddings (vocabulary size).
+            embedding_dim: Dimension of each embedding.
+        """
+        self.num_embeddings = num_embeddings
+        self.embedding_dim = embedding_dim
+        std = 1.0 / (embedding_dim**0.5)
+        self.weight = randn(
+            (num_embeddings, embedding_dim), requires_grad=True, std=std
+        )
+
+    def __call__(self, indices: list | tuple | Tensor) -> Tensor:
+        """
+        Forward pass: row-gather from weight by indices.
+
+        Args:
+            indices: Token IDs, 1D (N,) or 2D (B, S). List, tuple, or Tensor.
+
+        Returns:
+            Output tensor of shape (N, embedding_dim) or (B, S, embedding_dim).
+        """
+        return self.weight.embedding(indices)
+
+    def parameters(self) -> list[Tensor]:
+        """Return the single weight tensor."""
+        return [self.weight]
+
+    def __repr__(self) -> str:
+        return f"Embedding(num_embeddings={self.num_embeddings}, embedding_dim={self.embedding_dim})"
+
+
 class Conv2d(Module):
     """
     2D convolution: Y = conv2d(X, weight) + bias.
@@ -326,6 +380,57 @@ class MaxPool2d(Module):
 
     def __repr__(self) -> str:
         return f"MaxPool2d(kernel_size={self.kernel_size}, stride={self.stride})"
+
+
+class LayerNorm(Module):
+    """
+    Layer normalization over the last dimension: y = (x - mean) * rstd * gamma + beta.
+
+    Owns scale (gamma) and shift (beta), both 1D of length normalized_shape.
+    Supports 2D, 3D, and 4D inputs; 3D/4D are normalized over the last dimension.
+
+    Args:
+        normalized_shape: Size of the last dimension (e.g. d_model).
+        eps: Epsilon for variance stability (default 1e-5).
+
+    Attributes:
+        gamma: Scale parameter, shape (normalized_shape,), init ones.
+        beta: Shift parameter, shape (normalized_shape,), init zeros.
+    """
+
+    def __init__(self, normalized_shape: int, eps: float = 1e-5) -> None:
+        """
+        Initialize LayerNorm.
+
+        Gamma is initialized to ones, beta to zeros.
+
+        Args:
+            normalized_shape: Size of the last dimension to normalize.
+            eps: Epsilon added to variance (default 1e-5).
+        """
+        self.normalized_shape = normalized_shape
+        self.eps = eps
+        self.gamma = ones((normalized_shape,), requires_grad=True)
+        self.beta = zeros((normalized_shape,), requires_grad=True)
+
+    def __call__(self, x: Tensor) -> Tensor:
+        """
+        Forward pass: layer normalize over last dimension.
+
+        Args:
+            x: Input tensor of shape (N, H) or (N, ..., H) with H = normalized_shape.
+
+        Returns:
+            Output tensor of same shape as x.
+        """
+        return x.layer_norm(self.gamma, self.beta, eps=self.eps)
+
+    def parameters(self) -> list[Tensor]:
+        """Return gamma and beta."""
+        return [self.gamma, self.beta]
+
+    def __repr__(self) -> str:
+        return f"LayerNorm(normalized_shape={self.normalized_shape}, eps={self.eps})"
 
 
 class CNN(Module):

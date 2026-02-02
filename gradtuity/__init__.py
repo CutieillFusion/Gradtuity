@@ -13,7 +13,17 @@ from .functional import (
     zero_grad,
     sgd_step,
 )
-from .nn import CNN, Conv2d, Flatten, Linear, MaxPool2d, MLP, Module
+from .nn import (
+    CNN,
+    Conv2d,
+    Embedding,
+    Flatten,
+    LayerNorm,
+    Linear,
+    MaxPool2d,
+    MLP,
+    Module,
+)
 from .optim import AdamW, Optimizer, SGD, clip_grad_norm_
 from .tensor_io import load_safetensors, save_safetensors
 
@@ -32,8 +42,10 @@ __all__ = [
     "Module",
     "Linear",
     "Flatten",
+    "Embedding",
     "Conv2d",
     "MaxPool2d",
+    "LayerNorm",
     "CNN",
     "MLP",
     "AdamW",

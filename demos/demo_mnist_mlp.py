@@ -122,7 +122,9 @@ for i in range(num_train_batches):
     X_batch_np = X_train[start_idx:end_idx]
     y_batch_np = y_train[start_idx:end_idx]
     train_X_batches.append(Tensor(X_batch_np.tolist()))
-    train_Y_batches.append(one_hot(Tensor(y_batch_np.astype(np.float32).tolist()), num_classes=10))
+    train_Y_batches.append(
+        one_hot(Tensor(y_batch_np.astype(np.float32).tolist()), num_classes=10)
+    )
     train_Y_labels.append(y_batch_np)
 
 # Pre-create test batches as Tensors

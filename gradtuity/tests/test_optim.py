@@ -319,6 +319,7 @@ class TestClipGradNorm:
     def test_clip_grad_norm_clips_when_norm_exceeds_max(self):
         """When total norm > max_norm, grads are scaled by max_norm / total_norm."""
         import math
+
         # Two params: grads all ones -> sum of squares = 4 -> total_norm = sqrt(4) = 2.0
         p1 = Tensor([1.0, 2.0], requires_grad=True)
         p2 = Tensor([3.0, 4.0], requires_grad=True)
@@ -348,6 +349,7 @@ class TestClipGradNorm:
     def test_clip_grad_norm_skips_params_without_grad(self):
         """Params with grad=None are skipped; only params with grad contribute and are clipped."""
         import math
+
         p1 = Tensor([1.0, 2.0], requires_grad=True)
         p2 = Tensor([3.0, 4.0], requires_grad=True)
         p1.grad = Tensor([1.0, 1.0])

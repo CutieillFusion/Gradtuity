@@ -114,7 +114,9 @@ for i in range(num_train_batches):
     y_batch_np = y_train[start_idx:end_idx]
     X_batch_4d = X_batch_np.reshape(-1, 1, 28, 28)
     train_X_batches.append(Tensor(X_batch_4d.tolist()))
-    train_Y_batches.append(one_hot(Tensor(y_batch_np.astype(np.float32).tolist()), num_classes=10))
+    train_Y_batches.append(
+        one_hot(Tensor(y_batch_np.astype(np.float32).tolist()), num_classes=10)
+    )
     train_Y_labels.append(y_batch_np)
 
 TEST_BATCH_SIZE = 256

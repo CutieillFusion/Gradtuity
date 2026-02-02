@@ -149,7 +149,9 @@ for i in range(num_train_batches):
     X_batch = X_train[idx].reshape(-1, 1, 28, 28)
     y_batch = y_train[idx]
     train_X_batches.append(Tensor(X_batch.tolist()))
-    train_Y_batches.append(one_hot(Tensor(y_batch.astype(np.float32).tolist()), num_classes=10))
+    train_Y_batches.append(
+        one_hot(Tensor(y_batch.astype(np.float32).tolist()), num_classes=10)
+    )
     train_Y_labels.append(y_batch)
 
 TEST_BATCH_SIZE = 256

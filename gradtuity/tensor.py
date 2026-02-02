@@ -19,9 +19,11 @@ from typing import Callable, Optional
 import triton
 
 from .cuda_mem import (
+    cuda_device_synchronize,
     cuda_free,
     cuda_malloc,
     cuda_memcpy_dtoh,
+    cuda_memcpy_dtod,
     cuda_memcpy_htod,
     cuda_memset,
 )
@@ -73,6 +75,10 @@ from .kernels.softmax_kernels import (
 from .kernels.layernorm_kernels import (
     layernorm_bwd_kernel,
     layernorm_fwd_kernel,
+)
+from .kernels.gather_kernels import (
+    embedding_gather_kernel,
+    embedding_scatter_add_kernel,
 )
 # tensor_io imported lazily in save()/load() to avoid circular import with tensor_io -> tensor
 
@@ -652,6 +658,107 @@ class Tensor:
         out._set_graph(parents=(self, other), backward_fn=_backward)
         return out
 
+    def embedding(self, indices: list | tuple | "Tensor") -> "Tensor":
+        """
+        Row-gather (embedding lookup): out[n, d] = self[int(indices[n]), d].
+
+        Weight must be 2D (V, D). Indices can be 1D (N,) or 2D (B, S); output is (N, D) or (B, S, D).
+        Indices must be integer-valued and in range [0, V-1]. Gradients flow only to weight.
+
+        Args:
+            indices: Token IDs as Python list/tuple of ints or nested lists, or a Tensor of float32
+                (integer-valued, e.g. 1.0, 2.0).
+
+        Returns:
+            Gathered rows, shape (N, D) or (B, S, D) matching indices layout.
+        """
+        if self.ndim != 2:
+            raise ValueError(f"embedding requires 2D weight, got shape {self._shape}")
+        V, D = self._shape[0], self._shape[1]
+
+        # Convert indices to Tensor if needed; flatten to 1D for kernel
+        if isinstance(indices, (list, tuple)):
+            idx_tensor = Tensor(indices)
+        else:
+            idx_tensor = indices
+        if idx_tensor.ndim not in (1, 2):
+            raise ValueError(
+                f"embedding indices must be 1D or 2D, got ndim={idx_tensor.ndim}"
+            )
+        if idx_tensor.ndim == 2:
+            indices_shape = idx_tensor.shape
+            idx_flat = idx_tensor.view((idx_tensor.numel,))
+        else:
+            indices_shape = None
+            idx_flat = idx_tensor
+        N = idx_flat.numel
+
+        # Validate: integer-valued and in [0, V-1]
+        flat_vals = Tensor._flatten(idx_flat.to_list())
+        for v in flat_vals:
+            if abs(v - round(v)) >= 1e-6:
+                raise ValueError(
+                    "embedding indices must be integer-valued (e.g. 1.0, 2.0)"
+                )
+            ri = int(round(v))
+            if ri < 0 or ri >= V:
+                raise ValueError(f"embedding index {ri} out of range [0, {V - 1}]")
+
+        out_flat = empty_tensor((N, D))
+        BLOCK_D = 128
+        grid = (N, triton.cdiv(D, BLOCK_D))
+        embedding_gather_kernel[grid](
+            self.ptr,
+            idx_flat.ptr,
+            out_flat.ptr,
+            N=N,
+            D=D,
+            V=V,
+            BLOCK_D=BLOCK_D,
+        )
+
+        # For 2D indices, copy (N, D) into (B, S, D) so returned tensor owns its storage
+        if indices_shape is not None:
+            out = empty_tensor((*indices_shape, D))
+            cuda_memcpy_dtod(out.ptr, out_flat.ptr, N * D * F32)
+        else:
+            out = out_flat
+
+        weight_tensor = self
+        idx_flat_captured = idx_flat
+        idx_owner_captured = idx_tensor  # keep indices buffer alive until backward runs
+        N_captured = N
+        D_captured = D
+        V_captured = V
+        indices_shape_captured = indices_shape
+
+        def _backward(out_grad: Tensor) -> None:
+            _ = idx_owner_captured  # keep indices buffer alive until backward runs
+            if weight_tensor.requires_grad:
+                ensure_grad(weight_tensor)
+                if indices_shape_captured is not None:
+                    # Copy (B, S, D) to contiguous (N, D) so scatter kernel sees correct layout
+                    dout_flat = empty_tensor((N_captured, D_captured))
+                    cuda_memcpy_dtod(
+                        dout_flat.ptr, out_grad.ptr, N_captured * D_captured * F32
+                    )
+                else:
+                    dout_flat = out_grad
+                grid_bw = (N_captured, triton.cdiv(D_captured, BLOCK_D))
+                embedding_scatter_add_kernel[grid_bw](
+                    dout_flat.ptr,
+                    idx_flat_captured.ptr,
+                    weight_tensor.grad.ptr,
+                    N=N_captured,
+                    D=D_captured,
+                    V=V_captured,
+                    BLOCK_D=BLOCK_D,
+                )
+                cuda_device_synchronize()
+
+        out._set_graph(parents=(self,), backward_fn=_backward)
+        return out
+
     def bmm(self, other: "Tensor") -> "Tensor":
         """
         Batched matrix multiplication: C = self @ other per batch slice.
@@ -668,9 +775,7 @@ class Tensor:
         """
         ndim = self.ndim
         if ndim not in (3, 4):
-            raise ValueError(
-                f"bmm requires ndim 3 or 4, got self.ndim={ndim}"
-            )
+            raise ValueError(f"bmm requires ndim 3 or 4, got self.ndim={ndim}")
         if other.ndim != ndim:
             raise ValueError(
                 f"bmm requires same ndim for both tensors, got {ndim} vs {other.ndim}"
@@ -861,9 +966,7 @@ class Tensor:
         if approx != "tanh":
             raise ValueError(f'gelu approx must be "tanh" in v1, got {approx!r}')
         out = empty_tensor(self.shape)
-        gelu_kernel[grid1d(self.numel)](
-            self.ptr, out.ptr, self.numel, BLOCK=BLOCK
-        )
+        gelu_kernel[grid1d(self.numel)](self.ptr, out.ptr, self.numel, BLOCK=BLOCK)
 
         x = self
 
@@ -1042,9 +1145,7 @@ class Tensor:
             Tensor of shape (B, H, D, S).
         """
         if self.ndim != 4:
-            raise ValueError(
-                f"transpose4d_last2 requires ndim=4, got ndim={self.ndim}"
-            )
+            raise ValueError(f"transpose4d_last2 requires ndim=4, got ndim={self.ndim}")
         B, H, S, D = self.shape
         out_shape = (B, H, D, S)
         out = empty_tensor(out_shape)
@@ -1052,9 +1153,7 @@ class Tensor:
         for k in range(B * H):
             in_offset = k * slice_elems * F32
             out_offset = k * (D * S) * F32
-            transpose2d_kernel[
-                (triton.cdiv(S * D, BLOCK),)
-            ](
+            transpose2d_kernel[(triton.cdiv(S * D, BLOCK),)](
                 self.ptr + in_offset,
                 out.ptr + out_offset,
                 rows=S,

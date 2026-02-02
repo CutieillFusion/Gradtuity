@@ -829,6 +829,7 @@ class TestGELU:
     def _gelu_numpy_ref(x_np):
         """NumPy GELU (tanh approx) on float32 array; vectorized, no Python loop."""
         import numpy as np
+
         sqrt_2_over_pi = np.sqrt(np.float32(2.0 / np.pi))
         u = sqrt_2_over_pi * (x_np + np.float32(0.044715) * x_np**3)
         return np.float32(0.5) * x_np * (np.float32(1.0) + np.tanh(u))
@@ -846,6 +847,7 @@ class TestGELU:
     def test_gelu_forward_1d(self):
         """Test GELU forward vs NumPy for 1D."""
         import numpy as np
+
         data = [1.0, -1.0, 0.0, 2.0, -2.0]
         x_np = np.array(data, dtype=np.float32)
         expected = self._gelu_numpy_ref(x_np)
@@ -857,6 +859,7 @@ class TestGELU:
     def test_gelu_forward_2d(self):
         """Test GELU forward vs NumPy for 2D."""
         import numpy as np
+
         data = [[1.0, -1.0], [0.5, -0.5]]
         x_np = np.array(data, dtype=np.float32)
         expected = self._gelu_numpy_ref(x_np)
@@ -870,6 +873,7 @@ class TestGELU:
     def test_gelu_forward_4d(self):
         """Test GELU forward for 4D shape (1,2,3,4)."""
         import numpy as np
+
         np.random.seed(42)
         x_np = np.random.randn(1, 2, 3, 4).astype(np.float32)
         expected = self._gelu_numpy_ref(x_np)
@@ -889,6 +893,7 @@ class TestGELU:
     def test_gelu_backward_via_sum(self):
         """Test GELU backward: L = sum(gelu(x)), backward(), check grad."""
         import numpy as np
+
         x = Tensor([1.0, 2.0, -1.0, 0.5], requires_grad=True)
         y = x.gelu()
         loss = y.sum()
@@ -901,6 +906,7 @@ class TestGELU:
     def test_gelu_backward_finite_difference(self):
         """Test GELU backward with finite-difference gradient check."""
         import numpy as np
+
         eps = 1e-3  # meaningful in float32; 1e-5 is too small
         np.random.seed(123)
         data = np.random.randn(32).astype(np.float32) * 0.5
@@ -930,6 +936,7 @@ class TestGELU:
     def test_gelu_no_nans_large(self):
         """GELU forward is finite for large-magnitude inputs (tanh stability)."""
         import numpy as np
+
         x = Tensor([50.0, -50.0, 20.0, -20.0])
         y = x.gelu()
         out = np.array(y.to_list(), dtype=np.float32)
@@ -938,6 +945,7 @@ class TestGELU:
     def test_gelu_grad_accumulates(self):
         """Backward accumulates into x.grad when x is used twice (overwrite vs add)."""
         import numpy as np
+
         data = [0.1, -0.2, 0.3]
         x = Tensor(data, requires_grad=True)
         y1 = x.gelu().sum()
@@ -962,6 +970,7 @@ class TestSoftmax:
     def _softmax_numpy(x_np):
         """Stable softmax over last axis (float32)."""
         import numpy as np
+
         x = np.asarray(x_np, dtype=np.float32)
         m = np.max(x, axis=-1, keepdims=True)
         e = np.exp(x - m)
@@ -970,6 +979,7 @@ class TestSoftmax:
     def test_softmax_forward_2d(self):
         """Test softmax forward vs NumPy for 2D (rows, cols)."""
         import numpy as np
+
         data = [[1.0, 2.0, 3.0], [0.0, 1.0, -1.0]]
         x_np = np.array(data, dtype=np.float32)
         expected = self._softmax_numpy(x_np)
@@ -983,6 +993,7 @@ class TestSoftmax:
     def test_softmax_sum_to_one(self):
         """Per-row sum of softmax is 1."""
         import numpy as np
+
         x = Tensor([[1.0, 2.0, 1.0], [-1.0, 0.0, 1.0]])
         y = x.softmax(dim=-1)
         rows = np.array(y.to_list())
@@ -992,6 +1003,7 @@ class TestSoftmax:
     def test_softmax_forward_4d(self):
         """Test softmax on 4D (B, H, S, S) last dim as cols."""
         import numpy as np
+
         np.random.seed(42)
         x_np = np.random.randn(2, 2, 3, 4).astype(np.float32) * 0.5
         expected = self._softmax_numpy(x_np)
@@ -1011,6 +1023,7 @@ class TestSoftmax:
     def test_softmax_backward_via_sum(self):
         """Softmax backward: L = sum(softmax(x)), check grad finite."""
         import numpy as np
+
         x = Tensor([[1.0, 2.0, 0.5], [-0.5, 0.0, 1.0]], requires_grad=True)
         y = x.softmax(dim=-1)
         loss = y.sum()
@@ -1037,6 +1050,7 @@ class TestLayerNorm:
     def _layernorm_numpy(x_np, gamma_np, beta_np, eps=1e-5):
         """NumPy reference: per-row mean, var, rstd, xhat, y = xhat*gamma + beta."""
         import numpy as np
+
         x = np.asarray(x_np, dtype=np.float32)
         gamma = np.asarray(gamma_np, dtype=np.float32)
         beta = np.asarray(beta_np, dtype=np.float32)
@@ -1050,6 +1064,7 @@ class TestLayerNorm:
     def test_layer_norm_forward_2d_small(self):
         """LayerNorm forward vs NumPy for (N=4, H=8)."""
         import numpy as np
+
         np.random.seed(123)
         N, H = 4, 8
         x_np = np.random.randn(N, H).astype(np.float32) * 0.5
@@ -1068,6 +1083,7 @@ class TestLayerNorm:
     def test_layer_norm_forward_2d_medium(self):
         """LayerNorm forward vs NumPy for (N=2, H=32)."""
         import numpy as np
+
         np.random.seed(456)
         N, H = 2, 32
         x_np = np.random.randn(N, H).astype(np.float32) * 0.5
@@ -1086,6 +1102,7 @@ class TestLayerNorm:
     def test_layer_norm_forward_3d(self):
         """LayerNorm on 3D (2, 3, 8) flattens to (N, H), same as NumPy on flattened."""
         import numpy as np
+
         np.random.seed(789)
         x_np = np.random.randn(2, 3, 8).astype(np.float32) * 0.5
         gamma_np = np.random.randn(8).astype(np.float32) * 0.1 + 1.0
@@ -1104,6 +1121,7 @@ class TestLayerNorm:
     def test_layer_norm_forward_4d(self):
         """LayerNorm on 4D (1, 2, 2, 8) flattens to (N, H)."""
         import numpy as np
+
         np.random.seed(101)
         x_np = np.random.randn(1, 2, 2, 8).astype(np.float32) * 0.5
         gamma_np = np.random.randn(8).astype(np.float32) * 0.1 + 1.0
@@ -1122,6 +1140,7 @@ class TestLayerNorm:
     def test_layer_norm_backward_finite_difference(self):
         """LayerNorm backward: finite-difference check for x, gamma, beta (N=2, H=4)."""
         import numpy as np
+
         eps_fd = 1e-3
         np.random.seed(202)
         N, H = 2, 4
@@ -1205,6 +1224,7 @@ class TestTranspose4D:
     def test_transpose4d_round_trip(self):
         """Round-trip: transpose4d_last2().transpose4d_last2() equals identity."""
         import numpy as np
+
         np.random.seed(42)
         x_np = np.random.randn(2, 3, 4, 5).astype(np.float32)
         x = Tensor(x_np.tolist())
@@ -1219,6 +1239,7 @@ class TestTranspose4D:
     def test_transpose4d_backward(self):
         """Backward: L = sum(transpose4d_last2(x)), grad should be ones (after inverse transpose)."""
         import numpy as np
+
         x = Tensor(
             [[[[1.0, 2.0], [3.0, 4.0]]]],  # (1,1,2,2)
             requires_grad=True,
@@ -1255,6 +1276,7 @@ class TestBMM:
     def test_bmm_forward_rank3(self):
         """BMM forward rank-3: (B, M, K) @ (B, K, N) vs NumPy."""
         import numpy as np
+
         np.random.seed(42)
         B, M, K, N = 3, 4, 5, 2
         a_np = np.random.randn(B, M, K).astype(np.float32)
@@ -1271,6 +1293,7 @@ class TestBMM:
     def test_bmm_forward_rank4(self):
         """BMM forward rank-4: (B, H, M, K) @ (B, H, K, N) vs NumPy."""
         import numpy as np
+
         np.random.seed(42)
         B, H, M, K, N = 2, 3, 4, 5, 6
         a_np = np.random.randn(B, H, M, K).astype(np.float32)
@@ -1288,6 +1311,7 @@ class TestBMM:
     def test_bmm_backward_finite_difference(self):
         """BMM backward: finite-difference gradient check (loose tolerance)."""
         import numpy as np
+
         eps = 1e-3
         B, M, K, N = 2, 2, 3, 2
         np.random.seed(123)
@@ -1330,6 +1354,7 @@ class TestBMM:
     def test_bmm_backward_accumulates(self):
         """BMM backward accumulates when used twice (L = y1.sum() + y2.sum())."""
         import numpy as np
+
         B, M, K, N = 2, 2, 2, 2
         data_a = [[[1.0, 0.5], [0.5, 1.0]], [[0.5, 1.0], [1.0, 0.5]]]
         data_b = [[[1.0, 0.0], [0.0, 1.0]], [[0.5, 0.5], [0.5, 0.5]]]

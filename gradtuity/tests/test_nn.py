@@ -13,6 +13,7 @@ from gradtuity import (
     CNN,
     Conv2d,
     Flatten,
+    LayerNorm,
     Linear,
     MaxPool2d,
     MLP,
@@ -411,6 +412,72 @@ class TestMaxPool2d:
         # passing without OOM confirms the no-grad free path works.
         del y
         del x
+
+
+@pytest.mark.requires_triton
+class TestLayerNorm:
+    """Tests for nn.LayerNorm module."""
+
+    def test_layernorm_forward_2d(self):
+        """nn.LayerNorm forward on 2D (N, H); output matches x.layer_norm(gamma, beta)."""
+        ln = LayerNorm(8)
+        # gamma=ones, beta=zeros by default
+        x = Tensor(
+            [
+                [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+                [-1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            ]
+        )
+        out = ln(x)
+        expected = x.layer_norm(ln.gamma, ln.beta, eps=ln.eps)
+        assert out.shape == (2, 8)
+        for i in range(2):
+            assert out.to_list()[i] == pytest.approx(expected.to_list()[i])
+
+    def test_layernorm_forward_3d_shape_preservation(self):
+        """nn.LayerNorm on 3D (N, S, H) preserves shape."""
+        ln = LayerNorm(4)
+        x = Tensor([[[1.0, 2.0, 3.0, 4.0], [0.0, 1.0, 2.0, 3.0]]])  # (1, 2, 4)
+        out = ln(x)
+        assert out.shape == (1, 2, 4)
+
+    def test_layernorm_state_dict(self):
+        """nn.LayerNorm state_dict has gamma and beta."""
+        ln = LayerNorm(16)
+        state = ln.state_dict()
+        assert set(state.keys()) == {"gamma", "beta"}
+        assert state["gamma"] is ln.gamma
+        assert state["beta"] is ln.beta
+        assert state["gamma"].shape == (16,)
+        assert state["beta"].shape == (16,)
+
+    def test_layernorm_backward(self):
+        """nn.LayerNorm backward: loss on output gives gamma/beta grads."""
+        ln = LayerNorm(4)
+        x = Tensor(
+            [[1.0, 2.0, 3.0, 4.0], [0.0, 1.0, 2.0, 3.0]],
+            requires_grad=True,
+        )
+        out = ln(x)
+        loss = out.sum()
+        loss.backward()
+        assert ln.gamma.grad is not None
+        assert ln.beta.grad is not None
+        assert ln.gamma.grad.shape == (4,)
+        assert ln.beta.grad.shape == (4,)
+
+    def test_layernorm_eps_passed_through(self):
+        """Different eps changes output (sanity check eps is used)."""
+        ln_small = LayerNorm(4)
+        ln_small.eps = 1e-9
+        ln_large = LayerNorm(4)
+        ln_large.eps = 1e-1
+        # Use same gamma/beta (ones/zeros) so only eps differs
+        x = Tensor([[1.0, 2.0, 3.0, 4.0]])
+        out_small = ln_small(x)
+        out_large = ln_large(x)
+        # With large eps, normalization is weaker; outputs should differ
+        assert out_small.to_list() != out_large.to_list()
 
 
 @pytest.mark.requires_triton
