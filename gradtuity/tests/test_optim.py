@@ -7,7 +7,7 @@ Requires CUDA and Triton.
 import math
 import pytest
 
-from gradtuity import AdamW, Optimizer, SGD, Tensor
+from gradtuity import AdamW, Optimizer, SGD, Tensor, clip_grad_norm_
 
 pytestmark = [pytest.mark.requires_cuda, pytest.mark.requires_triton]
 
@@ -311,3 +311,51 @@ class TestOptimizerLoadDispatch:
         loaded = Optimizer.load(prefix, [p2])
         assert isinstance(loaded, SGD)
         assert loaded.lr == pytest.approx(0.02)
+
+
+class TestClipGradNorm:
+    """Tests for clip_grad_norm_(params, max_norm, eps)."""
+
+    def test_clip_grad_norm_clips_when_norm_exceeds_max(self):
+        """When total norm > max_norm, grads are scaled by max_norm / total_norm."""
+        import math
+        # Two params: grads all ones -> sum of squares = 4 -> total_norm = sqrt(4) = 2.0
+        p1 = Tensor([1.0, 2.0], requires_grad=True)
+        p2 = Tensor([3.0, 4.0], requires_grad=True)
+        p1.grad = Tensor([1.0, 1.0])
+        p2.grad = Tensor([1.0, 1.0])
+        total_norm = math.sqrt(4.0)  # 1^2 + 1^2 + 1^2 + 1^2 = 4
+        max_norm = 1.0
+        returned = clip_grad_norm_([p1, p2], max_norm=max_norm, eps=1e-6)
+        assert returned == pytest.approx(total_norm, rel=1e-5, abs=1e-6)
+        scale = max_norm / (total_norm + 1e-6)
+        assert p1.grad.to_list() == pytest.approx([scale, scale], rel=1e-5, abs=1e-6)
+        assert p2.grad.to_list() == pytest.approx([scale, scale], rel=1e-5, abs=1e-6)
+
+    def test_clip_grad_norm_unchanged_when_norm_below_max(self):
+        """When total norm <= max_norm, grads are unchanged."""
+        p1 = Tensor([1.0, 2.0], requires_grad=True)
+        p2 = Tensor([3.0, 4.0], requires_grad=True)
+        p1.grad = Tensor([0.1, 0.1])
+        p2.grad = Tensor([0.1, 0.1])
+        total_norm = (0.1 * 0.1 * 4) ** 0.5  # sqrt(0.04) = 0.2
+        max_norm = 1.0
+        returned = clip_grad_norm_([p1, p2], max_norm=max_norm, eps=1e-6)
+        assert returned == pytest.approx(0.2, rel=1e-5, abs=1e-6)
+        assert p1.grad.to_list() == pytest.approx([0.1, 0.1], rel=1e-5, abs=1e-6)
+        assert p2.grad.to_list() == pytest.approx([0.1, 0.1], rel=1e-5, abs=1e-6)
+
+    def test_clip_grad_norm_skips_params_without_grad(self):
+        """Params with grad=None are skipped; only params with grad contribute and are clipped."""
+        import math
+        p1 = Tensor([1.0, 2.0], requires_grad=True)
+        p2 = Tensor([3.0, 4.0], requires_grad=True)
+        p1.grad = Tensor([1.0, 1.0])
+        p2.grad = None
+        total_norm = math.sqrt(2.0)  # only p1 contributes
+        max_norm = 0.5
+        returned = clip_grad_norm_([p1, p2], max_norm=max_norm, eps=1e-6)
+        assert returned == pytest.approx(total_norm, rel=1e-5, abs=1e-6)
+        scale = max_norm / (total_norm + 1e-6)
+        assert p1.grad.to_list() == pytest.approx([scale, scale], rel=1e-5, abs=1e-6)
+        assert p2.grad is None

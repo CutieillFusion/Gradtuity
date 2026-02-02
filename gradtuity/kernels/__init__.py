@@ -5,6 +5,7 @@ from .elemwise_kernels import (
     add_kernel,
     gelu_backward_kernel,
     gelu_kernel,
+    mul_scalar_inplace_kernel,
     relu_backward_kernel,
     relu_kernel,
 )
@@ -16,6 +17,7 @@ from .reduce_kernels import (
     sum_all_kernel,
     sum_axis0_kernel,
 )
+from .layernorm_kernels import layernorm_bwd_kernel, layernorm_fwd_kernel
 from .one_hot_kernels import one_hot_kernel
 from .softmax_kernels import softmax_backward_kernel, softmax_forward_kernel
 
@@ -23,6 +25,7 @@ __all__ = [
     # Elementwise
     "add_kernel",
     "add_inplace_kernel",
+    "mul_scalar_inplace_kernel",
     "gelu_kernel",
     "gelu_backward_kernel",
     "relu_kernel",
@@ -44,4 +47,7 @@ __all__ = [
     # Softmax
     "softmax_forward_kernel",
     "softmax_backward_kernel",
+    # LayerNorm
+    "layernorm_fwd_kernel",
+    "layernorm_bwd_kernel",
 ]

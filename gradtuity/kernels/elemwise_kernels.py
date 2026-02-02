@@ -9,6 +9,7 @@ Includes:
 - add_inplace_kernel: In-place addition for gradient accumulation (A += B)
 - mul_kernel: Elementwise multiplication (C = A * B)
 - mul_scalar_kernel: Scalar multiplication (C = A * scalar)
+- mul_scalar_inplace_kernel: In-place scalar multiplication (x *= scalar)
 - mul_backward_kernel: Elementwise multiply backward with accumulation
 """
 
@@ -230,6 +231,33 @@ def mul_scalar_kernel(
     c = a * scalar
 
     tl.store(c_ptr + offsets, c, mask=mask)
+
+
+@triton.jit
+def mul_scalar_inplace_kernel(
+    x_ptr: tl.pointer_type(tl.float32),
+    scalar: tl.float32,
+    numel: tl.int32,
+    BLOCK: tl.constexpr,
+):
+    """
+    In-place scalar multiplication: x *= scalar
+
+    Used for gradient clipping (scale all grads by factor).
+
+    Args:
+        x_ptr: Tensor GPU pointer (float32*), modified in-place.
+        scalar: Scalar value to multiply by.
+        numel: Total number of elements.
+        BLOCK: Block size (compile-time constant).
+    """
+    pid = tl.program_id(0)
+    offsets = pid * BLOCK + tl.arange(0, BLOCK)
+    mask = offsets < numel
+
+    x = tl.load(x_ptr + offsets, mask=mask)
+    x = x * scalar
+    tl.store(x_ptr + offsets, x, mask=mask)
 
 
 @triton.jit

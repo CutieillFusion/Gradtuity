@@ -14,7 +14,7 @@ from .functional import (
     sgd_step,
 )
 from .nn import CNN, Conv2d, Flatten, Linear, MaxPool2d, MLP, Module
-from .optim import AdamW, Optimizer, SGD
+from .optim import AdamW, Optimizer, SGD, clip_grad_norm_
 from .tensor_io import load_safetensors, save_safetensors
 
 __all__ = [
@@ -39,6 +39,7 @@ __all__ = [
     "AdamW",
     "Optimizer",
     "SGD",
+    "clip_grad_norm_",
     "save_safetensors",
     "load_safetensors",
 ]

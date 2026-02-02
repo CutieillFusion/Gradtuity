@@ -33,6 +33,7 @@ from .kernels.elemwise_kernels import (
     gelu_kernel,
     mul_backward_kernel,
     mul_kernel,
+    mul_scalar_inplace_kernel,
     mul_scalar_kernel,
     relu_backward_kernel,
     relu_kernel,
@@ -68,6 +69,10 @@ from .kernels.reduce_kernels import (
 from .kernels.softmax_kernels import (
     softmax_backward_kernel,
     softmax_forward_kernel,
+)
+from .kernels.layernorm_kernels import (
+    layernorm_bwd_kernel,
+    layernorm_fwd_kernel,
 )
 # tensor_io imported lazily in save()/load() to avoid circular import with tensor_io -> tensor
 
@@ -920,6 +925,110 @@ class Tensor:
                 )
 
         out._set_graph(parents=(self,), backward_fn=_backward)
+        return out
+
+    def layer_norm(
+        self, gamma: "Tensor", beta: "Tensor", eps: float = 1e-5
+    ) -> "Tensor":
+        """
+        LayerNorm over the last dimension: y = (x - mean) * rstd * gamma + beta.
+
+        v1: input ndim in (2, 3, 4); 3D/4D are flattened to (N, H) internally.
+        gamma and beta must be 1D of shape (H,) where H = self.shape[-1].
+
+        Args:
+            gamma: Scale (H,), applied to normalized values.
+            beta: Shift (H,).
+            eps: Epsilon for variance stability.
+
+        Returns:
+            Tensor of same shape as self.
+        """
+        if self.ndim not in (2, 3, 4):
+            raise ValueError(
+                f"layer_norm v1 requires ndim in (2, 3, 4), got ndim={self.ndim}"
+            )
+        if gamma.ndim != 1 or beta.ndim != 1:
+            raise ValueError(
+                f"layer_norm requires 1D gamma and beta, got gamma.ndim={gamma.ndim}, beta.ndim={beta.ndim}"
+            )
+        H = self.shape[-1]
+        if gamma.shape[0] != H or beta.shape[0] != H:
+            raise ValueError(
+                f"layer_norm gamma/beta must have shape (H,) with H={H}, got gamma={gamma.shape}, beta={beta.shape}"
+            )
+
+        original_shape = self.shape
+        if self.ndim == 2:
+            N, H = self.shape[0], self.shape[1]
+            x = self
+            out = empty_tensor((N, H))
+        else:
+            N = self.numel // H
+            x = self.view((N, H))
+            # Allocate output with original shape so kernel writes directly into returned tensor
+            out = empty_tensor(original_shape)
+
+        xhat = empty_tensor((N, H))
+        rstd = empty_tensor((N,))
+
+        BLOCK_H = 1024
+        layernorm_fwd_kernel[(N,)](
+            x.ptr,
+            gamma.ptr,
+            beta.ptr,
+            out.ptr,
+            xhat.ptr,
+            rstd.ptr,
+            N=N,
+            H=H,
+            eps=eps,
+            BLOCK_H=BLOCK_H,
+        )
+
+        x_tensor = self
+        gamma_tensor = gamma
+        beta_tensor = beta
+        xhat_saved = xhat
+        rstd_saved = rstd
+
+        def _backward(out_grad: Tensor) -> None:
+            dy = out_grad.view((N, H)) if out_grad.shape != (N, H) else out_grad
+            dx = empty_tensor((N, H), zero=True)
+            with temp_storage(H * F32, zero=True) as st_dg:
+                with temp_storage(H * F32, zero=True) as st_db:
+                    if gamma_tensor.requires_grad:
+                        ensure_grad(gamma_tensor)
+                        dgamma_ptr = gamma_tensor.grad.ptr
+                    else:
+                        dgamma_ptr = st_dg.ptr
+                    if beta_tensor.requires_grad:
+                        ensure_grad(beta_tensor)
+                        dbeta_ptr = beta_tensor.grad.ptr
+                    else:
+                        dbeta_ptr = st_db.ptr
+                    layernorm_bwd_kernel[(N,)](
+                        dx.ptr,
+                        dgamma_ptr,
+                        dbeta_ptr,
+                        dy.ptr,
+                        xhat_saved.ptr,
+                        rstd_saved.ptr,
+                        gamma_tensor.ptr,
+                        N=N,
+                        H=H,
+                        BLOCK_H=BLOCK_H,
+                    )
+            if x_tensor.requires_grad:
+                ensure_grad(x_tensor)
+                add_inplace_kernel[grid1d(N * H)](
+                    x_tensor.grad.ptr,
+                    dx.ptr,
+                    N * H,
+                    BLOCK=BLOCK,
+                )
+
+        out._set_graph(parents=(self, gamma, beta), backward_fn=_backward)
         return out
 
     def transpose4d_last2(self) -> "Tensor":
@@ -1883,6 +1992,19 @@ class Tensor:
 
         out._set_graph(parents=(self,), backward_fn=_backward)
         return out
+
+    def mul_scalar_inplace_(self, scalar: float) -> None:
+        """
+        In-place multiply by scalar: self *= scalar.
+
+        No graph, no backward. Used for gradient clipping.
+
+        Args:
+            scalar: The scalar value to multiply by.
+        """
+        mul_scalar_inplace_kernel[grid1d(self.numel)](
+            self.ptr, scalar, self.numel, BLOCK=BLOCK
+        )
 
     # -------------------------------------------------------------------------
     # Operator overloads

@@ -13,10 +13,12 @@ from typing import TYPE_CHECKING
 
 import triton
 
-from .cuda_mem import cuda_memset
-from .kernels.optim_kernels import adamw_step_kernel, sgd_update_kernel
-from .tensor import Tensor
-from .tensor_io import load_safetensors, save_safetensors
+from ..cuda_mem import cuda_memset
+from ..kernels.optim_kernels import adamw_step_kernel, sgd_update_kernel
+from ..tensor import Tensor
+from ..tensor_io import load_safetensors, save_safetensors
+
+from .utils import clip_grad_norm_
 
 if TYPE_CHECKING:
     from typing import Any
@@ -358,3 +360,5 @@ class SGD(Optimizer):
 
 
 _OPTIMIZER_REGISTRY: dict[str, type[Optimizer]] = {"AdamW": AdamW, "SGD": SGD}
+
+__all__ = ["AdamW", "Optimizer", "SGD", "clip_grad_norm_"]

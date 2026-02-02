@@ -1030,6 +1030,175 @@ class TestSoftmax:
 
 @pytest.mark.requires_cuda
 @pytest.mark.requires_triton
+class TestLayerNorm:
+    """Tests for layer_norm(gamma, beta, eps) over last dimension."""
+
+    @staticmethod
+    def _layernorm_numpy(x_np, gamma_np, beta_np, eps=1e-5):
+        """NumPy reference: per-row mean, var, rstd, xhat, y = xhat*gamma + beta."""
+        import numpy as np
+        x = np.asarray(x_np, dtype=np.float32)
+        gamma = np.asarray(gamma_np, dtype=np.float32)
+        beta = np.asarray(beta_np, dtype=np.float32)
+        mean = np.mean(x, axis=-1, keepdims=True)
+        var = np.var(x, axis=-1, keepdims=True) + eps
+        rstd = 1.0 / np.sqrt(var)
+        xhat = (x - mean) * rstd
+        y = xhat * gamma + beta
+        return y.astype(np.float32)
+
+    def test_layer_norm_forward_2d_small(self):
+        """LayerNorm forward vs NumPy for (N=4, H=8)."""
+        import numpy as np
+        np.random.seed(123)
+        N, H = 4, 8
+        x_np = np.random.randn(N, H).astype(np.float32) * 0.5
+        gamma_np = np.random.randn(H).astype(np.float32) * 0.1 + 1.0
+        beta_np = np.random.randn(H).astype(np.float32) * 0.1
+        expected = self._layernorm_numpy(x_np, gamma_np, beta_np)
+        x = Tensor(x_np.tolist())
+        gamma = Tensor(gamma_np.tolist())
+        beta = Tensor(beta_np.tolist())
+        y = x.layer_norm(gamma, beta)
+        assert y.shape == (N, H)
+        flat_y = np.array(y.to_list()).ravel()
+        flat_expected = expected.ravel()
+        assert flat_y == pytest.approx(flat_expected, rel=1e-4, abs=1e-5)
+
+    def test_layer_norm_forward_2d_medium(self):
+        """LayerNorm forward vs NumPy for (N=2, H=32)."""
+        import numpy as np
+        np.random.seed(456)
+        N, H = 2, 32
+        x_np = np.random.randn(N, H).astype(np.float32) * 0.5
+        gamma_np = np.random.randn(H).astype(np.float32) * 0.1 + 1.0
+        beta_np = np.random.randn(H).astype(np.float32) * 0.1
+        expected = self._layernorm_numpy(x_np, gamma_np, beta_np)
+        x = Tensor(x_np.tolist())
+        gamma = Tensor(gamma_np.tolist())
+        beta = Tensor(beta_np.tolist())
+        y = x.layer_norm(gamma, beta)
+        assert y.shape == (N, H)
+        flat_y = np.array(y.to_list()).ravel()
+        flat_expected = expected.ravel()
+        assert flat_y == pytest.approx(flat_expected, rel=1e-4, abs=1e-5)
+
+    def test_layer_norm_forward_3d(self):
+        """LayerNorm on 3D (2, 3, 8) flattens to (N, H), same as NumPy on flattened."""
+        import numpy as np
+        np.random.seed(789)
+        x_np = np.random.randn(2, 3, 8).astype(np.float32) * 0.5
+        gamma_np = np.random.randn(8).astype(np.float32) * 0.1 + 1.0
+        beta_np = np.random.randn(8).astype(np.float32) * 0.1
+        expected = self._layernorm_numpy(x_np.reshape(-1, 8), gamma_np, beta_np)
+        expected = expected.reshape(2, 3, 8)
+        x = Tensor(x_np.tolist())
+        gamma = Tensor(gamma_np.tolist())
+        beta = Tensor(beta_np.tolist())
+        y = x.layer_norm(gamma, beta)
+        assert y.shape == (2, 3, 8)
+        flat_y = np.array(y.to_list()).ravel()
+        flat_expected = expected.ravel()
+        assert flat_y == pytest.approx(flat_expected, rel=1e-4, abs=1e-5)
+
+    def test_layer_norm_forward_4d(self):
+        """LayerNorm on 4D (1, 2, 2, 8) flattens to (N, H)."""
+        import numpy as np
+        np.random.seed(101)
+        x_np = np.random.randn(1, 2, 2, 8).astype(np.float32) * 0.5
+        gamma_np = np.random.randn(8).astype(np.float32) * 0.1 + 1.0
+        beta_np = np.random.randn(8).astype(np.float32) * 0.1
+        expected = self._layernorm_numpy(x_np.reshape(-1, 8), gamma_np, beta_np)
+        expected = expected.reshape(1, 2, 2, 8)
+        x = Tensor(x_np.tolist())
+        gamma = Tensor(gamma_np.tolist())
+        beta = Tensor(beta_np.tolist())
+        y = x.layer_norm(gamma, beta)
+        assert y.shape == (1, 2, 2, 8)
+        flat_y = np.array(y.to_list()).ravel()
+        flat_expected = expected.ravel()
+        assert flat_y == pytest.approx(flat_expected, rel=1e-4, abs=1e-5)
+
+    def test_layer_norm_backward_finite_difference(self):
+        """LayerNorm backward: finite-difference check for x, gamma, beta (N=2, H=4)."""
+        import numpy as np
+        eps_fd = 1e-3
+        np.random.seed(202)
+        N, H = 2, 4
+        x_np = np.random.randn(N, H).astype(np.float32) * 0.5
+        gamma_np = np.random.randn(H).astype(np.float32) * 0.1 + 1.0
+        beta_np = np.random.randn(H).astype(np.float32) * 0.1
+
+        eps_ln = 1e-5
+
+        def loss_fn(x, g, b):
+            mean = np.mean(x, axis=-1, keepdims=True)
+            var = np.var(x, axis=-1, keepdims=True) + eps_ln
+            rstd = 1.0 / np.sqrt(var)
+            xhat = (x - mean) * rstd
+            y = xhat * g + b
+            return np.sum(y)
+
+        x = Tensor(x_np.tolist(), requires_grad=True)
+        gamma = Tensor(gamma_np.tolist(), requires_grad=True)
+        beta = Tensor(beta_np.tolist(), requires_grad=True)
+        y = x.layer_norm(gamma, beta)
+        loss = y.sum()
+        loss.backward()
+
+        grad_x = np.array(x.grad.to_list(), dtype=np.float32)
+        grad_gamma = np.array(gamma.grad.to_list(), dtype=np.float32)
+        grad_beta = np.array(beta.grad.to_list(), dtype=np.float32)
+
+        # Numeric grad for x
+        grad_x_numeric = np.zeros_like(x_np)
+        for i in range(N):
+            for j in range(H):
+                x_plus = x_np.copy()
+                x_plus[i, j] += eps_fd
+                x_minus = x_np.copy()
+                x_minus[i, j] -= eps_fd
+                grad_x_numeric[i, j] = (
+                    loss_fn(x_plus, gamma_np, beta_np)
+                    - loss_fn(x_minus, gamma_np, beta_np)
+                ) / (2.0 * eps_fd)
+        assert grad_x == pytest.approx(grad_x_numeric, rel=0.05, abs=0.01)
+
+        # Numeric grad for gamma
+        grad_gamma_numeric = np.zeros_like(gamma_np)
+        for j in range(H):
+            g_plus = gamma_np.copy()
+            g_plus[j] += eps_fd
+            g_minus = gamma_np.copy()
+            g_minus[j] -= eps_fd
+            grad_gamma_numeric[j] = (
+                loss_fn(x_np, g_plus, beta_np) - loss_fn(x_np, g_minus, beta_np)
+            ) / (2.0 * eps_fd)
+        assert grad_gamma == pytest.approx(grad_gamma_numeric, rel=0.05, abs=0.01)
+
+        # Numeric grad for beta
+        grad_beta_numeric = np.zeros_like(beta_np)
+        for j in range(H):
+            b_plus = beta_np.copy()
+            b_plus[j] += eps_fd
+            b_minus = beta_np.copy()
+            b_minus[j] -= eps_fd
+            grad_beta_numeric[j] = (
+                loss_fn(x_np, gamma_np, b_plus) - loss_fn(x_np, gamma_np, b_minus)
+            ) / (2.0 * eps_fd)
+        assert grad_beta == pytest.approx(grad_beta_numeric, rel=0.05, abs=0.01)
+
+    def test_layer_norm_rejects_ndim(self):
+        """LayerNorm v1 only accepts ndim in (2, 3, 4)."""
+        x = Tensor([1.0, 2.0, 3.0])
+        gamma = Tensor([1.0])
+        beta = Tensor([0.0])
+        with pytest.raises(ValueError, match="ndim"):
+            x.layer_norm(gamma, beta)
+
+
+@pytest.mark.requires_cuda
+@pytest.mark.requires_triton
 class TestTranspose4D:
     """Tests for transpose4d_last2: (B,H,S,D) -> (B,H,D,S)."""
 
