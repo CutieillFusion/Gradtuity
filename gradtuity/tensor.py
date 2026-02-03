@@ -1193,9 +1193,7 @@ class Tensor:
             Tensor of shape (B, C, A, D).
         """
         if self.ndim != 4:
-            raise ValueError(
-                f"transpose4d_12 requires ndim=4, got ndim={self.ndim}"
-            )
+            raise ValueError(f"transpose4d_12 requires ndim=4, got ndim={self.ndim}")
         B, A, C, D = self.shape
         out_shape = (B, C, A, D)
         out = empty_tensor(out_shape)
@@ -1233,9 +1231,7 @@ class Tensor:
             New tensor of same shape with causal mask applied.
         """
         if self.ndim != 4:
-            raise ValueError(
-                f"apply_causal_mask requires ndim=4, got ndim={self.ndim}"
-            )
+            raise ValueError(f"apply_causal_mask requires ndim=4, got ndim={self.ndim}")
         B, H, S, S_last = self.shape
         if S != S_last:
             raise ValueError(
@@ -1395,9 +1391,7 @@ class Tensor:
             raise ValueError(
                 f"cross_entropy reduction must be 'mean' or 'sum', got {reduction!r}"
             )
-        if C > 1024:
-            raise ValueError(f"cross_entropy supports at most 1024 classes, got C={C}")
-        # BLOCK_C: next power of 2 >= C, capped at 1024
+        # BLOCK_C: next power of 2 >= C, capped at 1024 (kernel loops over C in steps of BLOCK_C)
         block_c = min(1024, 1 << (C - 1).bit_length()) if C >= 1 else 1
 
         out = empty_tensor((1,), zero=True)

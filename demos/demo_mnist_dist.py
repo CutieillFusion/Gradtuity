@@ -121,7 +121,7 @@ print_rank("")
 
 BATCH_SIZE = 64
 NUM_EPOCHS = 10
-INITIAL_LR = 0.01 * world_size ** 0.5
+INITIAL_LR = 0.01 * world_size**0.5
 
 optimizer = SGD(model.parameters(), lr=INITIAL_LR)
 

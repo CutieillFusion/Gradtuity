@@ -7,7 +7,12 @@ These tests require a CUDA-enabled GPU to run.
 import pytest
 
 from gradtuity import Dropout, Tensor, ones, zeros
-from gradtuity.random import DropoutRNG, default_rng, dropout_rng_state_dict, load_dropout_rng_state
+from gradtuity.random import (
+    DropoutRNG,
+    default_rng,
+    dropout_rng_state_dict,
+    load_dropout_rng_state,
+)
 
 pytestmark = pytest.mark.requires_cuda
 

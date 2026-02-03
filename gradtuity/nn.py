@@ -553,14 +553,18 @@ class CausalSelfAttention(Module):
 
     def parameters(self) -> list[Tensor]:
         return [
-            self.Wq, self.Wk, self.Wv, self.Wo,
-            self.bq, self.bk, self.bv, self.bo,
+            self.Wq,
+            self.Wk,
+            self.Wv,
+            self.Wo,
+            self.bq,
+            self.bk,
+            self.bv,
+            self.bo,
         ]
 
     def __repr__(self) -> str:
-        return (
-            f"CausalSelfAttention(embed_dim={self.embed_dim}, num_heads={self.num_heads})"
-        )
+        return f"CausalSelfAttention(embed_dim={self.embed_dim}, num_heads={self.num_heads})"
 
 
 class Conv2d(Module):

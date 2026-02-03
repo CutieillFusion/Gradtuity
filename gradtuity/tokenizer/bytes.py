@@ -18,9 +18,9 @@ def _bytes_to_unicode_tables() -> tuple[dict[int, str], dict[str, int]]:
     """
     # Ranges that map byte value to same codepoint (printable, no control chars)
     safe_byte_ranges: list[tuple[int, int]] = [
-        (ord("!"), ord("~") + 1),   # printable ASCII
-        (ord("¡"), ord("¬") + 1),   # Latin-1 supplement
-        (ord("®"), ord("ÿ") + 1),   # Latin-1 supplement
+        (ord("!"), ord("~") + 1),  # printable ASCII
+        (ord("¡"), ord("¬") + 1),  # Latin-1 supplement
+        (ord("®"), ord("ÿ") + 1),  # Latin-1 supplement
     ]
     bs: list[int] = []
     for lo, hi in safe_byte_ranges:

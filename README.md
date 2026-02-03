@@ -7,12 +7,16 @@
 - **GPU tensors** via raw CUDA (ctypes + `libcudart.so`), no PyTorch/NumPy for storage.
 - **Autograd:** computation graph, `backward()`, topo sort, gradient propagation.
 - **Triton kernels:** matmul, elementwise (add, mul, ReLU), conv2d, maxpool2d, reductions, SGD step.
-- **NN building blocks:** `Module`, `Linear`, `Conv2d`, `MaxPool2d`, `Flatten`, `MLP`, `CNN`.
-- **Training helpers:** `zero_grad`, `sgd_step` (in [gradtuity/functional.py](gradtuity/functional.py)).
+- **NN building blocks:** `Module`, `Linear`, `Conv2d`, `MaxPool2d`, `Flatten`, `Dropout`, `Embedding`, `PositionalEmbedding`, `LayerNorm`, `CausalSelfAttention`, `TiedLMHead`, `MLP`, `CNN` (see [API overview](#api-overview)).
+- **Training helpers:** `zero_grad`, `sgd_step` (in [gradtuity/functional.py](gradtuity/functional.py)); optimizers `SGD`, `AdamW`; `clip_grad_norm_` for gradient clipping.
+- **Distributed training:** single-node data parallel via NCCL; `gradtuity.dist` (`init`, `sync_grads`, `init_sync`, sampler helpers); launcher `python -m gradtuity.launch --nproc N train_script.py`.
+- **Transformer building blocks:** `Embedding`, `PositionalEmbedding`, `CausalSelfAttention`, `LayerNorm`, `TiedLMHead`, `Dropout`.
+- **Tokenizer:** BPE `Tokenizer` in `gradtuity.tokenizer` (encode/decode), used by demos/tests.
+- **Checkpointing / I/O:** `save_safetensors`, `load_safetensors` ([tensor_io.py](gradtuity/tensor_io.py)); dropout RNG state for reproducibility ([random.py](gradtuity/random.py)).
 
 ## Install / Quick start
 
-Requirements: Python 3.12+, CUDA, `numpy`, `torch`, `triton`.
+Requirements: Python 3.12+, CUDA, `numpy`, `torch`, `triton`. See [pyproject.toml](pyproject.toml) for pinned versions.
 
 Install [uv](https://docs.astral.sh/uv/) (Python package manager):
 
@@ -29,7 +33,7 @@ uv sync
 Run the MNIST demo:
 
 ```bash
-uv run python demos/demo_mnist.py
+uv run python demos/demo_mnist_mlp.py
 ```
 
 Training Step Example:
@@ -113,7 +117,9 @@ For a minimal example, see [fill_kernel](gradtuity/kernels/optim_kernels.py) (no
 
 ## Training loop
 
-Typical training step: forward → scalar loss → `zero_grad` → `backward()` → `sgd_step`. Demos: [demos/demo_mnist.py](demos/demo_mnist.py), [demos/demo_mnist_cnn.py](demos/demo_mnist_cnn.py).
+Typical training step: forward → scalar loss → `zero_grad` → `backward()` → optimizer step (e.g. `sgd_step` or `AdamW`); optionally `clip_grad_norm_` before the step. Demos: [demos/demo_mnist_mlp.py](demos/demo_mnist_mlp.py), [demos/demo_mnist_cnn.py](demos/demo_mnist_cnn.py).
+
+For **multi-GPU training**, call `gradtuity.dist.init()` at startup, then after `loss.backward()` call `sync_grads(model.parameters())` to all-reduce gradients; spawn workers with `python -m gradtuity.launch --nproc N script.py`. See [demos/demo_mnist_dist.py](demos/demo_mnist_dist.py).
 
 ```mermaid
 sequenceDiagram
@@ -129,7 +135,7 @@ sequenceDiagram
     User->>functional: zero_grad(params)
     User->>Tensor: loss.backward()
     Note over Tensor: topo sort, then _backward()
-    User->>functional: sgd_step(params, lr)
+    User->>functional: sgd_step(params, lr) or optimizer.step()
 ```
 
 ## Autograd
@@ -153,15 +159,23 @@ flowchart LR
 ## API overview
 
 - **Tensors:** `Tensor(data, shape?, requires_grad?)`, `.backward()`, `.grad`; factories: `zeros`, `ones`, `randn`, etc. in `functional`.
-- **Training:** `zero_grad(params)`, `sgd_step(params, lr)`.
-- **NN:** `Module`, `Linear`, `Conv2d`, `MaxPool2d`, `Flatten`, `MLP`, `CNN` from `gradtuity.nn`.
+- **Training:** `zero_grad(params)`, `sgd_step(params, lr)`; optimizers `SGD`, `AdamW`; `clip_grad_norm_` for gradient clipping.
+- **NN:** `Module`, `Linear`, `Conv2d`, `MaxPool2d`, `Flatten`, `Dropout`, `Embedding`, `PositionalEmbedding`, `LayerNorm`, `CausalSelfAttention`, `TiedLMHead`, `MLP`, `CNN` from [gradtuity.nn](gradtuity/nn.py).
+- **Distributed:** `gradtuity.dist`: `init`, `sync_grads`, `init_sync`, `get_rank`, `get_world_size`, `distributed_indices`, `shard_size`; launcher: `python -m gradtuity.launch`.
+- **I/O and tokenizer:** `save_safetensors`, `load_safetensors`; `Tokenizer`; optional: DropoutRNG / state dict for checkpointing.
 
 See docstrings and [gradtuity/tests/](gradtuity/tests/) for details.
 
 ## Demos and tests
 
-- **Demos:** `demos/demo_mnist.py` (MLP), `demos/demo_mnist_cnn.py` (CNN). Run with `uv run python demos/demo_mnist.py`.
-- **Tests:** `pytest gradtuity/tests` (from repo root).
+- **Demos:** Run with `uv run python demos/<script>.py` from repo root:
+  - `demo_mnist_mlp.py`, `demo_mnist_cnn.py` — MNIST MLP/CNN
+  - `demo_mnist_dist.py` — distributed MNIST (multi-GPU)
+  - `demo_train.py` — minimal MLP training
+  - `demo_checkpoint.py` — SafeTensors save/load and resume
+  - `demo_moons.py` — Moons dataset
+  - `demo_tokenizer.py` — BPE tokenizer
+- **Tests:** `pytest gradtuity/tests` (from repo root). Markers: `requires_cuda`, `requires_triton`, `requires_nccl`, `requires_multigpu` (see [pyproject.toml](pyproject.toml)).
 
 ## License
 

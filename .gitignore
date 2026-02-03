@@ -93,3 +93,7 @@ demos/plots/
 
 # SafeTensors Checkpoints
 *.safetensors
+
+# GPT-2 Data
+gpt2/data/
+*.arrow

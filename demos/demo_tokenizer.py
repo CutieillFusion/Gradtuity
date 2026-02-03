@@ -35,8 +35,8 @@ print(f"  vocab_size: {tok.vocab_size}")
 print()
 
 examples = [
-    "".join(chr(i) for i in range(32, 127)), # All printable ASCII characters
-    "encode → ids → decode", # Special characters (→)
+    "".join(chr(i) for i in range(32, 127)),  # All printable ASCII characters
+    "encode → ids → decode",  # Special characters (→)
     "€50 • £30 • ¥100",
     "日本語",
     "α → β ⇒ γ",

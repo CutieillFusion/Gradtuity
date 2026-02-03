@@ -65,7 +65,10 @@ def apply_bpe(word: str, bpe_ranks: dict[tuple[str, str], int]) -> str:
         new_word: list[str] = []
         i = 0
         while i < len(word_tuple):
-            if i < len(word_tuple) - 1 and (word_tuple[i], word_tuple[i + 1]) == (first, second):
+            if i < len(word_tuple) - 1 and (word_tuple[i], word_tuple[i + 1]) == (
+                first,
+                second,
+            ):
                 new_word.append(first + second)
                 i += 2
             else:
