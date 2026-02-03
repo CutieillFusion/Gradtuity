@@ -1355,7 +1355,6 @@ class TestBMM:
         """BMM backward accumulates when used twice (L = y1.sum() + y2.sum())."""
         import numpy as np
 
-        B, M, K, N = 2, 2, 2, 2
         data_a = [[[1.0, 0.5], [0.5, 1.0]], [[0.5, 1.0], [1.0, 0.5]]]
         data_b = [[[1.0, 0.0], [0.0, 1.0]], [[0.5, 0.5], [0.5, 0.5]]]
         a = Tensor(data_a, requires_grad=True)

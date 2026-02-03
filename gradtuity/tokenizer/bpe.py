@@ -25,7 +25,8 @@ def parse_merges_lines(lines: list[str]) -> dict[tuple[str, str], int]:
     Build bpe_ranks from merge file lines.
 
     Skips comment lines (e.g. starting with #). Each non-comment line is
-    "a b" -> pair (a, b) with rank = 0-based line index. Lower rank = merge earlier.
+    "a b" -> pair (a, b) with rank = 0-based line index.
+    Lower rank = merge earlier.
     """
     bpe_ranks: dict[tuple[str, str], int] = {}
     rank = 0

@@ -11,17 +11,15 @@ import pytest
 
 from gradtuity import (
     CNN,
+    MLP,
     Conv2d,
     Flatten,
     LayerNorm,
     Linear,
     MaxPool2d,
-    MLP,
     Module,
     Tensor,
     ones,
-    randn,
-    zeros,
 )
 
 # Mark all tests in this module as requiring CUDA

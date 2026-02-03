@@ -2,11 +2,11 @@
 """
 Gradtuity MNIST Multi-GPU Demo (CNN w/DDP)
 
-This script trains a convolutional neural network (CNN) on the MNIST handwritten digit dataset 
-using Gradtuity's from-scratch tensor autograd engine with Triton GPU kernels. 
+This script trains a convolutional neural network (CNN) on the MNIST handwritten digit dataset
+using Gradtuity's from-scratch tensor autograd engine with Triton GPU kernels.
 
-It is designed for distributed multi-GPU training: each process (rank) works on a unique shard 
-of the training data, gradients are synchronized across all GPUs with AllReduce after every 
+It is designed for distributed multi-GPU training: each process (rank) works on a unique shard
+of the training data, gradients are synchronized across all GPUs with AllReduce after every
 backward pass, ensuring all model replicas stay in sync throughout training.
 
 Architecture: CNN (Conv -> ReLU -> Pool -> Conv -> ReLU -> Pool -> Flatten -> Linear -> ReLU -> Linear)
@@ -39,13 +39,11 @@ from sklearn.model_selection import train_test_split
 
 from gradtuity import CNN, SGD, Tensor, one_hot
 from gradtuity.dist import (
-    init,
-    destroy_process_group,
-    init_sync,
-    sync_grads,
+    distributed_indices,
     get_rank,
     get_world_size,
-    distributed_indices,
+    init,
+    init_sync,
     print_rank,
 )
 
@@ -86,8 +84,8 @@ X_train, X_test, y_train, y_test = train_test_split(
 print_rank(f"Loaded in {time.time() - start_time:.1f}s")
 print_rank(f"Training samples: {len(X_train)}")
 print_rank(f"Test samples: {len(X_test)}")
-print_rank(f"Input shape for CNN: (batch, 1, 28, 28)")
-print_rank(f"Classes: 0-9 (10 digits)")
+print_rank("Input shape for CNN: (batch, 1, 28, 28)")
+print_rank("Classes: 0-9 (10 digits)")
 print_rank("")
 
 # Visualize some samples

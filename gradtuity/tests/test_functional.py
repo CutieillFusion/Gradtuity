@@ -8,16 +8,16 @@ Uses pytest parametrization to reduce test duplication.
 import pytest
 
 from gradtuity.functional import (
-    zeros,
-    zeros_like,
-    ones,
-    ones_like,
-    randn,
     full,
     full_like,
     one_hot,
-    zero_grad,
+    ones,
+    ones_like,
+    randn,
     sgd_step,
+    zero_grad,
+    zeros,
+    zeros_like,
 )
 from gradtuity.tensor import Tensor
 

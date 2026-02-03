@@ -11,6 +11,7 @@ import json
 import math
 import os
 import struct
+
 from .cuda_mem import cuda_memcpy_dtoh, cuda_memcpy_htod
 from .tensor import Tensor, alloc_storage
 

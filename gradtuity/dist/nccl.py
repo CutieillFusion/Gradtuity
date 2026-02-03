@@ -36,6 +36,7 @@ def _load_libnccl() -> ctypes.CDLL:
 
 _libnccl = _load_libnccl()
 
+
 # ncclUniqueId: struct with char internal[NCCL_UNIQUE_ID_BYTES]
 class _NcclUniqueId(ctypes.Structure):
     _fields_ = [("internal", ctypes.c_char * NCCL_UNIQUE_ID_BYTES)]

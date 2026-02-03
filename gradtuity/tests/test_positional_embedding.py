@@ -6,7 +6,7 @@ These tests require a CUDA-enabled GPU to run.
 
 import pytest
 
-from gradtuity import PositionalEmbedding, Tensor
+from gradtuity import PositionalEmbedding
 
 pytestmark = pytest.mark.requires_cuda
 

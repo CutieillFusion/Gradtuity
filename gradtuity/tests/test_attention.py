@@ -7,7 +7,7 @@ These tests require a CUDA-enabled GPU and Triton.
 import numpy as np
 import pytest
 
-from gradtuity import CausalSelfAttention, Tensor, randn, zeros
+from gradtuity import CausalSelfAttention, Tensor, randn
 
 pytestmark = pytest.mark.requires_cuda
 

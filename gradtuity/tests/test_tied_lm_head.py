@@ -6,7 +6,7 @@ These tests require a CUDA-enabled GPU to run.
 
 import pytest
 
-from gradtuity import Embedding, TiedLMHead, Tensor, randn
+from gradtuity import Embedding, TiedLMHead, randn
 
 pytestmark = pytest.mark.requires_cuda
 

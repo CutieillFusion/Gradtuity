@@ -1,8 +1,8 @@
 """
 Generic Tokenizer: vocab.json + merges.txt (Option-B).
 
-Loads from disk; provides encode/decode and vocab_size. Byte-level BPE semantics
-compatible with common artifact formats; no model-specific naming.
+Loads from disk; provides encode/decode and vocab_size. Byte-level BPE
+semantics compatible with common artifact formats.
 """
 
 from __future__ import annotations
@@ -28,7 +28,9 @@ def _load_vocab(vocab_path: str) -> dict[str, int]:
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON in {vocab_path!r}: {e}") from e
     if not isinstance(raw, dict):
-        raise ValueError(f"vocab must be a JSON object (token -> id), got {type(raw).__name__}")
+        raise ValueError(
+            f"vocab must be a JSON object (token -> id), got {type(raw).__name__}"
+        )
     return {str(k): int(v) for k, v in raw.items()}
 
 
@@ -96,7 +98,9 @@ class Tokenizer:
         except FileNotFoundError:
             raise FileNotFoundError(f"vocab file not found: {vocab_path!r}") from None
         except OSError as e:
-            raise FileNotFoundError(f"cannot read vocab file {vocab_path!r}: {e}") from e
+            raise FileNotFoundError(
+                f"cannot read vocab file {vocab_path!r}: {e}"
+            ) from e
 
         vocab_size = _validate_contiguous(token_to_id)
         id_to_token = [""] * vocab_size
@@ -108,7 +112,9 @@ class Tokenizer:
         except FileNotFoundError:
             raise FileNotFoundError(f"merges file not found: {merges_path!r}") from None
         except OSError as e:
-            raise FileNotFoundError(f"cannot read merges file {merges_path!r}: {e}") from e
+            raise FileNotFoundError(
+                f"cannot read merges file {merges_path!r}: {e}"
+            ) from e
 
         return cls(
             token_to_id=token_to_id,
@@ -129,7 +135,9 @@ class Tokenizer:
         Raises ValueError if a BPE symbol is not in the vocab (with context).
         """
         if not self._bpe_ranks:
-            raise ValueError("merges required for encode (merges file was empty or had no valid lines)")
+            raise ValueError(
+                "merges required for encode (merges file was empty or had no valid lines)"
+            )
         ids: list[int] = []
         for piece in _PAT.findall(text):
             token_bytes = piece.encode("utf-8")

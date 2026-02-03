@@ -2,7 +2,6 @@
 Tests for tokenizer I/O: vocab contiguity, merges parsing, file-not-found.
 """
 
-import json
 import pytest
 
 from gradtuity.tokenizer import Tokenizer

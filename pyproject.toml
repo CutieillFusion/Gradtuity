@@ -21,6 +21,7 @@ dev = [
     "datasets>=4.5.0",
     "tqdm>=4.67.0",
     "tiktoken>=0.8.0",
+    "flake8-pyproject>=1.2.4",
 ]
 
 [tool.pytest.ini_options]
@@ -30,3 +31,7 @@ markers = [
     "requires_nccl: mark test as requiring NCCL library",
     "requires_multigpu: mark test as requiring at least 2 GPUs",
 ]
+
+[tool.flake8]
+extend-ignore = ["E501", "E731", "E402", "E203"]
+extend-exclude = [".venv"]

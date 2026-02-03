@@ -51,9 +51,6 @@ def im2col_kernel(
     pid_row = tl.program_id(0)
     pid_col = tl.program_id(1)
 
-    row_offsets = pid_row * BLOCK_ROW + tl.arange(0, BLOCK_ROW)
-    col_offsets = pid_col * BLOCK_COL + tl.arange(0, BLOCK_COL)
-
     for i in range(BLOCK_ROW):
         for j in range(BLOCK_COL):
             row_idx = pid_row * BLOCK_ROW + i

@@ -20,6 +20,7 @@ from . import env as dist_env
 # Number of bytes per float32
 F32 = 4
 
+
 def sync_grads(params: list, bucket_mb: float = 25) -> None:
     """
     Synchronize gradients across ranks: AllReduce (sum) then scale by 1/world_size.

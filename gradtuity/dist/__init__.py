@@ -29,7 +29,7 @@ get_master_addr = _env.get_master_addr
 get_master_port = _env.get_master_port
 get_env_ranks = _env.get_env_ranks
 
-# Process group
+
 def init() -> None:
     """Initialize process group (device + NCCL). Call once at startup."""
     comm.init_process_group()
@@ -60,7 +60,7 @@ def print_rank(message: str = "", ranks: list[int] = [0], **kwargs: dict) -> Non
     if get_rank() in ranks:
         print(message, **kwargs)
 
-# Sampler
+
 distributed_indices = sampler.distributed_indices
 shard_size = sampler.shard_size
 

@@ -10,9 +10,9 @@ import struct
 
 import triton
 
-from .cuda_mem import cuda_malloc, cuda_memset, cuda_memcpy_htod
-from .kernels.optim_kernels import fill_kernel, sgd_update_kernel
+from .cuda_mem import cuda_malloc, cuda_memcpy_htod, cuda_memset
 from .kernels.one_hot_kernels import one_hot_kernel
+from .kernels.optim_kernels import fill_kernel, sgd_update_kernel
 from .tensor import Tensor
 
 

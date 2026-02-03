@@ -10,7 +10,6 @@ This module implements a minimal Tensor type that:
 from __future__ import annotations
 
 import math
-import os
 import struct
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -22,12 +21,13 @@ from .cuda_mem import (
     cuda_device_synchronize,
     cuda_free,
     cuda_malloc,
-    cuda_memcpy_dtoh,
     cuda_memcpy_dtod,
+    cuda_memcpy_dtoh,
     cuda_memcpy_htod,
     cuda_memset,
 )
 from .kernels.conv_kernels import col2im_kernel, im2col_kernel_2d
+from .kernels.dropout_kernels import dropout_backward_kernel, dropout_forward_kernel
 from .kernels.elemwise_kernels import (
     add_inplace_kernel,
     add_kernel,
@@ -42,6 +42,22 @@ from .kernels.elemwise_kernels import (
     relu_mask_mul_kernel,
     scale_backward_kernel,
 )
+from .kernels.gather_kernels import (
+    embedding_gather_kernel,
+    embedding_scatter_add_kernel,
+)
+from .kernels.layernorm_kernels import layernorm_bwd_kernel, layernorm_fwd_kernel
+from .kernels.loss_kernels import (
+    cross_entropy_backward_kernel,
+    cross_entropy_forward_kernel,
+    mse_loss_backward_kernel,
+    mse_loss_kernel,
+)
+from .kernels.mask_kernels import (
+    causal_mask_backward_kernel,
+    causal_mask_inplace_kernel,
+    transpose4d_12_kernel,
+)
 from .kernels.matmul_kernels import (
     matmul_bias_kernel,
     matmul_bias_relu_kernel,
@@ -51,16 +67,7 @@ from .kernels.matmul_kernels import (
     transpose2d_kernel,
 )
 from .kernels.optim_kernels import fill_kernel
-from .kernels.pool_kernels import (
-    maxpool2d_backward_kernel,
-    maxpool2d_forward_kernel,
-)
-from .kernels.loss_kernels import (
-    cross_entropy_backward_kernel,
-    cross_entropy_forward_kernel,
-    mse_loss_backward_kernel,
-    mse_loss_kernel,
-)
+from .kernels.pool_kernels import maxpool2d_backward_kernel, maxpool2d_forward_kernel
 from .kernels.reduce_kernels import (
     add_bias_kernel,
     add_scalar_inplace_kernel,
@@ -68,29 +75,9 @@ from .kernels.reduce_kernels import (
     sum_all_kernel,
     sum_axis0_kernel,
 )
-from .kernels.softmax_kernels import (
-    softmax_backward_kernel,
-    softmax_forward_kernel,
-)
-from .kernels.layernorm_kernels import (
-    layernorm_bwd_kernel,
-    layernorm_fwd_kernel,
-)
-from .kernels.gather_kernels import (
-    embedding_gather_kernel,
-    embedding_scatter_add_kernel,
-)
-from .kernels.mask_kernels import (
-    causal_mask_backward_kernel,
-    causal_mask_inplace_kernel,
-    transpose4d_12_kernel,
-)
-from .kernels.dropout_kernels import (
-    dropout_forward_kernel,
-    dropout_backward_kernel,
-)
-from .random import default_rng
-from .random import DropoutRNG
+from .kernels.softmax_kernels import softmax_backward_kernel, softmax_forward_kernel
+from .random import DropoutRNG, default_rng
+
 # tensor_io imported lazily in save()/load() to avoid circular import with tensor_io -> tensor
 
 # -------------------------------------------------------------------------
@@ -2018,9 +2005,7 @@ class Tensor:
                             BLOCK=BLOCK,
                         )
             with temp_storage(num_rows * num_cols * F32) as d_col_st:
-                d_col = Tensor._wrap(
-                    d_col_st, (num_rows, num_cols), requires_grad=False
-                )
+                _ = Tensor._wrap(d_col_st, (num_rows, num_cols), requires_grad=False)
                 grid_dcol = (
                     max(1, triton.cdiv(num_rows, BLOCK_M)),
                     max(1, triton.cdiv(num_cols, BLOCK_N)),

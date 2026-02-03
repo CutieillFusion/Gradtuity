@@ -2,8 +2,6 @@
 Tests for tokenizer encode/decode: toy artifacts, round-trips, fixed encode outputs.
 """
 
-import os
-
 import pytest
 
 from gradtuity.tokenizer import Tokenizer
