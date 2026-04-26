@@ -537,9 +537,11 @@ class CausalSelfAttention(Module):
         # q, k, v: (B, H, S, D)
 
         scores = q.bmm(k.transpose4d_last2())
-        scores = scores.scale(self.scale)
-        scores = scores.apply_causal_mask()
-        attn = scores.softmax(dim=-1)
+        # In-place scale reuses the bmm-output buffer (no new (B,H,S,S) alloc).
+        # Fused mask+softmax does mask + softmax in one kernel — no intermediate
+        # masked-scores tensor. Together: 2 × (B,H,S,S) saved per layer vs. original.
+        scores = scores.scale_inplace(self.scale)
+        attn = scores.softmax_with_causal_mask()
         if self.attn_dropout is not None:
             attn = self.attn_dropout(attn)
         ctx = attn.bmm(v)

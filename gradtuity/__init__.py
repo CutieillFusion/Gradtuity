@@ -34,6 +34,7 @@ from .random import (
     dropout_rng_state_dict,
     load_dropout_rng_state,
 )
+from .checkpoint import checkpoint
 from .tensor import Tensor
 from .tensor_io import load_safetensors, save_safetensors
 from .tokenizer import Tokenizer
@@ -74,4 +75,5 @@ __all__ = [
     "dropout_rng_state_dict",
     "load_dropout_rng_state",
     "Tokenizer",
+    "checkpoint",
 ]

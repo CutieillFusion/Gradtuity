@@ -25,7 +25,11 @@ from .reduce_kernels import (
     sum_all_kernel,
     sum_axis0_kernel,
 )
-from .softmax_kernels import softmax_backward_kernel, softmax_forward_kernel
+from .softmax_kernels import (
+    softmax_backward_kernel,
+    softmax_forward_kernel,
+    softmax_with_causal_mask_forward_kernel,
+)
 
 __all__ = [
     # Elementwise
@@ -53,6 +57,7 @@ __all__ = [
     # Softmax
     "softmax_forward_kernel",
     "softmax_backward_kernel",
+    "softmax_with_causal_mask_forward_kernel",
     # LayerNorm
     "layernorm_fwd_kernel",
     "layernorm_bwd_kernel",

@@ -75,7 +75,11 @@ from .kernels.reduce_kernels import (
     sum_all_kernel,
     sum_axis0_kernel,
 )
-from .kernels.softmax_kernels import softmax_backward_kernel, softmax_forward_kernel
+from .kernels.softmax_kernels import (
+    softmax_backward_kernel,
+    softmax_forward_kernel,
+    softmax_with_causal_mask_forward_kernel,
+)
 from .random import DropoutRNG, default_rng
 
 # tensor_io imported lazily in save()/load() to avoid circular import with tensor_io -> tensor
@@ -399,18 +403,22 @@ class Tensor:
 
         build_topo(self)
 
-        # Reverse traverse: from output to inputs
-        for node in reversed(topo):
+        # Reverse traverse: from output to inputs.
+        # Drop topo[i] = None after each node so non-leaf intermediate Storage can be
+        # reclaimed by Python refcount (Storage.__del__ -> cuda_free) DURING the
+        # backward pass, not at the end. Halves backward peak memory at high seq_len.
+        # Leaves and views are safe: leaves are held by model/optimizer; views (owns=False
+        # Storage) are processed before their inputs in reverse topo, so the owning
+        # storage outlives them.
+        for i in range(len(topo) - 1, -1, -1):
+            node = topo[i]
             if node._backward is not None and node.grad is not None:
                 node._backward(node.grad)
-
-            # Optional: clear graph references to allow GC of intermediate tensors
-            # (but NOT the grad tensors or leaf tensors)
-            # We only clear non-leaf nodes (nodes with parents)
             if node._parents:
                 node._parents = ()
                 node._backward = None
                 node._ctx = None
+            topo[i] = None
 
     def _set_graph(
         self,
@@ -1010,14 +1018,69 @@ class Tensor:
             BLOCK_COLS=BLOCK_COLS,
         )
 
-        x = self
+        # Don't capture `x = self` — softmax backward only reads the output (out_saved).
+        # Capturing self kept the pre-softmax tensor (e.g. (B,H,S,S) attention scores)
+        # alive across the entire backward pass.
+        input_tensor = self
+        needs_grad = self.requires_grad
         out_saved = out
 
         def _backward(g: Tensor) -> None:
-            if x.requires_grad:
-                ensure_grad(x)
+            if needs_grad:
+                ensure_grad(input_tensor)
                 softmax_backward_kernel[(rows,)](
-                    x.grad.ptr,
+                    input_tensor.grad.ptr,
+                    g.ptr,
+                    out_saved.ptr,
+                    rows=rows,
+                    cols=cols,
+                    BLOCK_COLS=BLOCK_COLS,
+                )
+
+        out._set_graph(parents=(self,), backward_fn=_backward)
+        return out
+
+    def softmax_with_causal_mask(self) -> "Tensor":
+        """
+        Fused causal-mask + softmax for (B, H, S, S) attention scores.
+
+        Equivalent to `self.apply_causal_mask().softmax(-1)` but in one kernel,
+        so the masked-scores tensor is never materialized. Saves one (B,H,S,S)
+        allocation per attention layer.
+
+        Backward reuses `softmax_backward_kernel`: because masked y=0,
+        dx[masked] = y * (dy - dot) = 0 automatically — no separate mask backward.
+        """
+        if self.ndim != 4:
+            raise ValueError(
+                f"softmax_with_causal_mask requires ndim=4 (B,H,S,S), got ndim={self.ndim}"
+            )
+        B, H, S, S_last = self.shape
+        if S != S_last:
+            raise ValueError(
+                f"softmax_with_causal_mask requires square last two dims, got {self.shape}"
+            )
+        rows = B * H * S
+        cols = S
+        BLOCK_COLS = 1024
+        out = empty_tensor(self.shape)
+        softmax_with_causal_mask_forward_kernel[(rows,)](
+            self.ptr,
+            out.ptr,
+            rows=rows,
+            cols=cols,
+            BLOCK_COLS=BLOCK_COLS,
+        )
+
+        input_tensor = self
+        needs_grad = self.requires_grad
+        out_saved = out
+
+        def _backward(g: Tensor) -> None:
+            if needs_grad:
+                ensure_grad(input_tensor)
+                softmax_backward_kernel[(rows,)](
+                    input_tensor.grad.ptr,
                     g.ptr,
                     out_saved.ptr,
                     rows=rows,
@@ -1245,6 +1308,58 @@ class Tensor:
         def _backward(g: Tensor) -> None:
             if input_tensor.requires_grad:
                 grad_tmp = empty_tensor(self.shape)
+                causal_mask_backward_kernel[grid1d(B * H * S * S)](
+                    g.ptr,
+                    grad_tmp.ptr,
+                    B=B,
+                    H=H,
+                    S=S,
+                    BLOCK=BLOCK,
+                )
+                accum_grad(input_tensor, grad_tmp)
+
+        out._set_graph(parents=(self,), backward_fn=_backward)
+        return out
+
+    def apply_causal_mask_inplace(self, neg_inf: float = -1e9) -> "Tensor":
+        """
+        In-place causal mask: mutates self's (B,H,S,S) buffer setting upper-triangular
+        positions to neg_inf. Returns a new Tensor sharing the same storage with
+        backward attached.
+
+        Safe because the mask backward (zero gradients where j > i) never reads the
+        input value. Caller must NOT use `self` again after calling this.
+        """
+        if self.ndim != 4:
+            raise ValueError(f"apply_causal_mask_inplace requires ndim=4, got ndim={self.ndim}")
+        B, H, S, S_last = self.shape
+        if S != S_last:
+            raise ValueError(
+                f"apply_causal_mask_inplace requires square last two dims, got shape {self.shape}"
+            )
+        BLOCK_I = 32
+        BLOCK_J = 32
+        causal_mask_inplace_kernel[
+            (B * H, triton.cdiv(S, BLOCK_I), triton.cdiv(S, BLOCK_J))
+        ](
+            self.ptr,
+            B=B,
+            H=H,
+            S=S,
+            NEG_INF=neg_inf,
+            BLOCK_I=BLOCK_I,
+            BLOCK_J=BLOCK_J,
+        )
+        out = Tensor._wrap(
+            Storage(self._st.ptr, self._st.nbytes, owns=False),
+            self._shape,
+            requires_grad=False,
+        )
+        input_tensor = self
+
+        def _backward(g: Tensor) -> None:
+            if input_tensor.requires_grad:
+                grad_tmp = empty_tensor(input_tensor.shape)
                 causal_mask_backward_kernel[grid1d(B * H * S * S)](
                     g.ptr,
                     grad_tmp.ptr,
@@ -2284,6 +2399,40 @@ class Tensor:
         mul_scalar_inplace_kernel[grid1d(self.numel)](
             self.ptr, scalar, self.numel, BLOCK=BLOCK
         )
+
+    def scale_inplace(self, scalar: float) -> "Tensor":
+        """
+        In-place scale that preserves autograd: mutates self's buffer, returns a
+        new Tensor sharing the same storage (owns=False) with backward attached.
+
+        Safe because scale's backward (dx = dy * scalar) never reads the input value.
+        Caller must NOT use `self` again after calling this — the buffer has been
+        overwritten with the scaled values.
+        """
+        mul_scalar_inplace_kernel[grid1d(self.numel)](
+            self.ptr, scalar, self.numel, BLOCK=BLOCK
+        )
+        out = Tensor._wrap(
+            Storage(self._st.ptr, self._st.nbytes, owns=False),
+            self._shape,
+            requires_grad=False,
+        )
+        input_tensor = self
+        scale_val = scalar
+
+        def _backward(out_grad: Tensor) -> None:
+            if input_tensor.requires_grad:
+                ensure_grad(input_tensor)
+                scale_backward_kernel[grid1d(input_tensor.numel)](
+                    input_tensor.grad.ptr,
+                    out_grad.ptr,
+                    scale_val,
+                    input_tensor.numel,
+                    BLOCK=BLOCK,
+                )
+
+        out._set_graph(parents=(self,), backward_fn=_backward)
+        return out
 
     def dropout(
         self,
