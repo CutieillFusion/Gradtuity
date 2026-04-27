@@ -7,7 +7,7 @@ These tests require a CUDA-enabled GPU and Triton.
 import numpy as np
 import pytest
 
-from gradtuity import Tensor, randn
+from gradtuity import Tensor
 
 pytestmark = pytest.mark.requires_cuda
 

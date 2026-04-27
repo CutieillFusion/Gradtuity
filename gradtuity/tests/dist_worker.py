@@ -26,8 +26,7 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from gradtuity import cuda_mem
-from gradtuity.dist import init, destroy_process_group, init_sync
-from gradtuity.dist import comm
+from gradtuity.dist import comm, destroy_process_group, init, init_sync
 
 
 def main_allreduce(outfile: str | None) -> None:
@@ -56,6 +55,7 @@ def main_allreduce(outfile: str | None) -> None:
 def main_init_sync(outfile: str | None) -> None:
     """RNG desync: rank 1 consumes extra RNG; both build same model, init_sync, write first param sample."""
     import numpy as np
+
     from gradtuity.nn import Linear
 
     rank = int(os.environ.get("RANK", "0"))

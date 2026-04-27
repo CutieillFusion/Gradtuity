@@ -13,12 +13,13 @@ import os
 from .. import cuda_mem
 from ..tensor import ensure_grad
 from ..tensor import BLOCK, grid1d
-from ..kernels.elemwise_kernels import mul_scalar_kernel
+from ..kernels import mul_scalar_kernel
 from . import comm
 from . import env as dist_env
 
 # Number of bytes per float32
 F32 = 4
+
 
 def sync_grads(params: list, bucket_mb: float = 25) -> None:
     """

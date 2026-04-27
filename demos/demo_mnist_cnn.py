@@ -58,8 +58,8 @@ X_train, X_test, y_train, y_test = train_test_split(
 print(f"Loaded in {time.time() - start_time:.1f}s")
 print(f"Training samples: {len(X_train)}")
 print(f"Test samples: {len(X_test)}")
-print(f"Input shape for CNN: (batch, 1, 28, 28)")
-print(f"Classes: 0-9 (10 digits)")
+print("Input shape for CNN: (batch, 1, 28, 28)")
+print("Classes: 0-9 (10 digits)")
 print()
 
 # Visualize some samples

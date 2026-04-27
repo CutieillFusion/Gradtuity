@@ -5,9 +5,10 @@ Requires CUDA and Triton.
 """
 
 import math
+
 import pytest
 
-from gradtuity import AdamW, Optimizer, SGD, Tensor, clip_grad_norm_
+from gradtuity import SGD, AdamW, Optimizer, Tensor, clip_grad_norm_
 
 pytestmark = [pytest.mark.requires_cuda, pytest.mark.requires_triton]
 
@@ -339,7 +340,6 @@ class TestClipGradNorm:
         p2 = Tensor([3.0, 4.0], requires_grad=True)
         p1.grad = Tensor([0.1, 0.1])
         p2.grad = Tensor([0.1, 0.1])
-        total_norm = (0.1 * 0.1 * 4) ** 0.5  # sqrt(0.04) = 0.2
         max_norm = 1.0
         returned = clip_grad_norm_([p1, p2], max_norm=max_norm, eps=1e-6)
         assert returned == pytest.approx(0.2, rel=1e-5, abs=1e-6)

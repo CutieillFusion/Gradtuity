@@ -11,7 +11,6 @@ import os
 import subprocess
 import sys
 import tempfile
-
 from subprocess import TimeoutExpired
 
 import pytest
@@ -124,7 +123,7 @@ class TestDistSingleProcess:
 
     @pytest.mark.requires_triton
     def test_init_world_size_one(self, monkeypatch):
-        from gradtuity.dist import init, destroy_process_group
+        from gradtuity.dist import destroy_process_group, init
 
         monkeypatch.setenv("RANK", "0")
         monkeypatch.setenv("WORLD_SIZE", "1")
@@ -135,8 +134,8 @@ class TestDistSingleProcess:
     @pytest.mark.requires_triton
     def test_sync_grads_world_size_one_no_op(self, monkeypatch):
         from gradtuity import Tensor
+        from gradtuity.dist import destroy_process_group, init, sync_grads
         from gradtuity.nn import Linear
-        from gradtuity.dist import init, destroy_process_group, sync_grads
 
         monkeypatch.setenv("RANK", "0")
         monkeypatch.setenv("WORLD_SIZE", "1")
@@ -161,8 +160,8 @@ class TestSyncGradsEnsuresGrad:
 
     @pytest.mark.requires_triton
     def test_missing_grad_gets_zeros(self, monkeypatch):
+        from gradtuity.dist import destroy_process_group, init, sync_grads
         from gradtuity.nn import Linear
-        from gradtuity.dist import init, destroy_process_group, sync_grads
 
         monkeypatch.setenv("RANK", "0")
         monkeypatch.setenv("WORLD_SIZE", "1")
@@ -186,8 +185,8 @@ class TestBucketPackUnpackSingleProcess:
     @pytest.mark.requires_triton
     def test_sync_grads_preserves_grads_when_world_size_one(self, monkeypatch):
         from gradtuity import Tensor
+        from gradtuity.dist import destroy_process_group, init, sync_grads
         from gradtuity.nn import Linear
-        from gradtuity.dist import init, destroy_process_group, sync_grads
 
         monkeypatch.setenv("RANK", "0")
         monkeypatch.setenv("WORLD_SIZE", "1")
@@ -332,8 +331,8 @@ class TestInitSyncSingleProcess:
 
     @pytest.mark.requires_triton
     def test_init_sync_world_size_one_no_op(self, monkeypatch):
+        from gradtuity.dist import destroy_process_group, init, init_sync
         from gradtuity.nn import Linear
-        from gradtuity.dist import init, destroy_process_group, init_sync
 
         monkeypatch.setenv("RANK", "0")
         monkeypatch.setenv("WORLD_SIZE", "1")
@@ -543,8 +542,8 @@ class TestDeadlockMissingGrad:
 
     @pytest.mark.requires_triton
     def test_all_params_have_grad_after_sync(self, monkeypatch):
+        from gradtuity.dist import destroy_process_group, init, sync_grads
         from gradtuity.nn import MLP
-        from gradtuity.dist import init, destroy_process_group, sync_grads
 
         monkeypatch.setenv("RANK", "0")
         monkeypatch.setenv("WORLD_SIZE", "1")

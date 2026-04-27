@@ -11,7 +11,7 @@ These tests verify:
 
 import pytest
 
-from gradtuity import Tensor, randn, zeros, ones, zero_grad, sgd_step
+from gradtuity import Tensor, randn, sgd_step, zero_grad
 
 
 @pytest.mark.requires_cuda

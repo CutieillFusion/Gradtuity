@@ -18,6 +18,10 @@ dev = [
     "scikit-learn>=1.8.0",
     "matplotlib>=3.10.8",
     "pandas>=3.0.0",
+    "datasets>=4.5.0",
+    "tqdm>=4.67.0",
+    "tiktoken>=0.8.0",
+    "flake8-pyproject>=1.2.4",
 ]
 
 [tool.pytest.ini_options]
@@ -26,4 +30,9 @@ markers = [
     "requires_triton: mark test as requiring Triton (active CUDA GPU)",
     "requires_nccl: mark test as requiring NCCL library",
     "requires_multigpu: mark test as requiring at least 2 GPUs",
+    "kernel_backend_agnostic: opt out of auto Triton/CUDA backend parametrization (the test exercises both backends explicitly)",
 ]
+
+[tool.flake8]
+extend-ignore = ["E501", "E731", "E402", "E203"]
+extend-exclude = [".venv"]

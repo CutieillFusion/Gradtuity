@@ -5,15 +5,16 @@ These tests require a CUDA-enabled GPU to run.
 """
 
 import struct
+
 import pytest
 
 from gradtuity.cuda_mem import (
-    cuda_malloc,
     cuda_free,
-    cuda_memset,
-    cuda_memcpy_htod,
-    cuda_memcpy_dtoh,
+    cuda_malloc,
     cuda_memcpy_dtod,
+    cuda_memcpy_dtoh,
+    cuda_memcpy_htod,
+    cuda_memset,
 )
 
 # Mark all tests in this module as requiring CUDA

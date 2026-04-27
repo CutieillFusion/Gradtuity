@@ -3,6 +3,8 @@ Triton kernels for softmax over the last dimension.
 
 - softmax_forward_kernel: Numerically stable softmax per row (max-subtract then exp/sum).
 - softmax_backward_kernel: dx = y * (dy - sum(dy * y)) per row.
+- softmax_with_causal_mask_forward_kernel: Fused causal mask + softmax for (B, H, S, S)
+  attention scores. Reuses softmax_backward_kernel: masked y=0 ⇒ masked dx=0 automatically.
 """
 
 import triton
@@ -110,3 +112,60 @@ def softmax_backward_kernel(
         y = tl.load(y_ptr + indices, mask=mask, other=0.0)
         dx_val = tl.where(mask, y * (dy - dot), 0.0)
         tl.store(dx_ptr + indices, dx_val, mask=mask)
+
+
+@triton.jit
+def softmax_with_causal_mask_forward_kernel(
+    x_ptr: tl.pointer_type(tl.float32),
+    y_ptr: tl.pointer_type(tl.float32),
+    rows: tl.int32,
+    cols: tl.int32,
+    BLOCK_COLS: tl.constexpr,
+):
+    """
+    Fused causal-mask + softmax over last dim of (B, H, S, S) scores.
+
+    Caller passes rows = B*H*S, cols = S. Within each row i (i = row_idx % S),
+    columns j > i are treated as -inf (skipped from max/sum and written as 0).
+    Numerically stable: max-subtract then exp/sum.
+
+    Backward: use the existing softmax_backward_kernel unchanged. y[masked]=0 makes
+    dx[masked] = y * (dy - dot) = 0 automatically — no separate mask backward needed.
+    """
+    row_idx = tl.program_id(0)
+    if row_idx >= rows:
+        return
+
+    # Within each (S, S) block, position-in-block = row_idx % cols (cols == S).
+    # Causal: column j is valid iff j <= i_in_block.
+    i_in_block = row_idx % cols
+
+    # Row max over j ∈ [0, i_in_block]
+    m = -float("inf")
+    for col_start in range(0, cols, BLOCK_COLS):
+        col_offsets = col_start + tl.arange(0, BLOCK_COLS)
+        valid = (col_offsets < cols) & (col_offsets <= i_in_block)
+        indices = row_idx * cols + col_offsets
+        x = tl.load(x_ptr + indices, mask=valid, other=-float("inf"))
+        local_max = tl.max(x, axis=0)
+        m = tl.maximum(m, local_max)
+
+    # sumexp = sum(exp(x - m)) over j ∈ [0, i_in_block]
+    sumexp = 0.0
+    for col_start in range(0, cols, BLOCK_COLS):
+        col_offsets = col_start + tl.arange(0, BLOCK_COLS)
+        valid = (col_offsets < cols) & (col_offsets <= i_in_block)
+        indices = row_idx * cols + col_offsets
+        x = tl.load(x_ptr + indices, mask=valid, other=0.0)
+        exp_val = tl.where(valid, tl.exp(x - m), 0.0)
+        sumexp += tl.sum(exp_val, axis=0)
+
+    # Write y: exp(x - m) / sumexp for valid j, else 0
+    for col_start in range(0, cols, BLOCK_COLS):
+        col_offsets = col_start + tl.arange(0, BLOCK_COLS)
+        in_row = col_offsets < cols
+        valid = in_row & (col_offsets <= i_in_block)
+        indices = row_idx * cols + col_offsets
+        x = tl.load(x_ptr + indices, mask=valid, other=0.0)
+        y_val = tl.where(valid, tl.exp(x - m) / sumexp, 0.0)
+        tl.store(y_ptr + indices, y_val, mask=in_row)

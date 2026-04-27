@@ -17,6 +17,7 @@ from __future__ import annotations
 import math
 
 from .functional import ones, randn, zero_grad, zeros
+from .random import DropoutRNG, default_rng
 from .tensor import Tensor
 
 
@@ -27,6 +28,39 @@ class Module:
     Subclasses should implement __call__ for the forward pass.
     Parameters are automatically collected from Linear layers.
     """
+
+    def __init__(self) -> None:
+        self.training = True
+
+    def train(self, mode: bool = True) -> "Module":
+        """
+        Set training mode. When True, dropout etc. are active; when False, eval behavior.
+
+        Recurses into child Modules. Returns self for chaining.
+        """
+        self.training = mode
+
+        def visit(obj: object) -> None:
+            for attr_name in dir(obj):
+                if attr_name.startswith("_"):
+                    continue
+                try:
+                    attr = getattr(obj, attr_name)
+                except AttributeError:
+                    continue
+                if isinstance(attr, Module):
+                    attr.train(mode)
+                elif isinstance(attr, list):
+                    for item in attr:
+                        if isinstance(item, Module):
+                            item.train(mode)
+
+        visit(self)
+        return self
+
+    def eval(self) -> "Module":
+        """Set evaluation mode (training=False). Returns self for chaining."""
+        return self.train(False)
 
     def parameters(self) -> list[Tensor]:
         """
@@ -241,6 +275,33 @@ class Flatten(Module):
         return f"Flatten(start_dim={self.start_dim})"
 
 
+class Dropout(Module):
+    """
+    Inverted dropout: y = x * mask / (1-p) in train, y = x in eval.
+
+    Obeys module.train() / module.eval(). Uses deterministic RNG (seed + counter)
+    so the same mask is regenerated in backward (no large mask storage).
+
+    Args:
+        p: Drop probability (keep with prob 1-p).
+        rng: DropoutRNG for deterministic mask; uses default_rng() if None.
+    """
+
+    def __init__(self, p: float = 0.1, rng: DropoutRNG | None = None) -> None:
+        super().__init__()
+        self.p = p
+        self.rng = rng if rng is not None else default_rng()
+
+    def __call__(self, x: Tensor) -> Tensor:
+        return x.dropout(p=self.p, training=self.training, rng=self.rng)
+
+    def parameters(self) -> list[Tensor]:
+        return []
+
+    def __repr__(self) -> str:
+        return f"Dropout(p={self.p})"
+
+
 class Embedding(Module):
     """
     Lookup table (embedding) layer: out = weight[indices].
@@ -293,19 +354,133 @@ class Embedding(Module):
         return f"Embedding(num_embeddings={self.num_embeddings}, embedding_dim={self.embedding_dim})"
 
 
+class PositionalEmbedding(Module):
+    """
+    Positional embedding (GPT-2 style): fixed max positions, learned vectors.
+
+    Wraps an internal Embedding(max_positions, embed_dim). Forward returns
+    (batch_size, seq_len, embed_dim) with the same position vector repeated
+    across batch rows.
+
+    Args:
+        max_positions: Maximum sequence length (number of position indices).
+        embed_dim: Dimension of each position vector.
+    """
+
+    def __init__(self, max_positions: int, embed_dim: int) -> None:
+        self.max_positions = max_positions
+        self.embed_dim = embed_dim
+        self.embed = Embedding(max_positions, embed_dim)
+        self._position_cache: dict[int, list[int]] = {}
+
+    def _positions_1d(self, seq_len: int, start_pos: int) -> list[int]:
+        if seq_len not in self._position_cache:
+            self._position_cache[seq_len] = list(range(seq_len))
+        base = self._position_cache[seq_len]
+        return [start_pos + i for i in base]
+
+    def __call__(
+        self,
+        seq_len: int,
+        batch_size: int,
+        start_pos: int = 0,
+    ) -> Tensor:
+        """
+        Forward: positional embeddings for (batch_size, seq_len, embed_dim).
+
+        Args:
+            seq_len: Sequence length S.
+            batch_size: Batch size B.
+            start_pos: First position index (for KV-cache / sliding window).
+
+        Returns:
+            Tensor of shape (B, S, embed_dim).
+        """
+        if start_pos + seq_len > self.max_positions:
+            raise ValueError(
+                f"start_pos ({start_pos}) + seq_len ({seq_len}) > max_positions ({self.max_positions})"
+            )
+        positions_1d = self._positions_1d(seq_len, start_pos)
+        indices = positions_1d * batch_size
+        out_flat = self.embed(indices)
+        return out_flat.view((batch_size, seq_len, self.embed_dim))
+
+    def parameters(self) -> list[Tensor]:
+        return self.embed.parameters()
+
+    def __repr__(self) -> str:
+        return f"PositionalEmbedding(max_positions={self.max_positions}, embed_dim={self.embed_dim})"
+
+
+class TiedLMHead(Module):
+    """
+    LM head with weight tying: logits = h @ wte.weight.T.
+
+    No separate weight; uses the embedding module's weight. Gradients flow
+    into wte.weight so the optimizer sees it only once. state_dict stores
+    the weight once (under the embedding).
+
+    Args:
+        embedding_module: nn.Embedding whose weight is used (e.g. wte).
+    """
+
+    def __init__(self, embedding_module: Embedding) -> None:
+        self.embedding_module = embedding_module
+
+    def __call__(self, h: Tensor) -> Tensor:
+        """
+        Forward: logits = h @ wte.weight.T.
+
+        Args:
+            h: Hidden states (B, S, E).
+
+        Returns:
+            Logits (B, S, V).
+        """
+        B, S, E = h.shape
+        wte = self.embedding_module
+        if E != wte.embedding_dim:
+            raise ValueError(
+                f"input last dim {E} must equal embedding_dim {wte.embedding_dim}"
+            )
+        h_flat = h.view((B * S, E))
+        logits_flat = h_flat.linear_tied(wte.weight)
+        return logits_flat.view((B, S, wte.num_embeddings))
+
+    def parameters(self) -> list[Tensor]:
+        return []
+
+    @property
+    def weight_ref(self) -> Tensor:
+        """Reference to the shared weight (for tests)."""
+        return self.embedding_module.weight
+
+    def __repr__(self) -> str:
+        return "TiedLMHead(tied to Embedding)"
+
+
 class CausalSelfAttention(Module):
     """
     Multi-head causal self-attention (decoder-only, GPT-style).
 
     Input (B, S, E), output (B, S, E). Position i cannot attend to j > i.
     Uses separate Q, K, V projections and a single output projection.
+    Optional attention and residual dropout (GPT-2 style).
 
     Args:
         embed_dim: Model dimension E (must equal input/output last dim).
         num_heads: Number of attention heads (embed_dim must be divisible).
+        attn_pdrop: Dropout on attention weights after softmax (default 0.0).
+        resid_pdrop: Dropout on output before residual add (default 0.0).
     """
 
-    def __init__(self, embed_dim: int, num_heads: int) -> None:
+    def __init__(
+        self,
+        embed_dim: int,
+        num_heads: int,
+        attn_pdrop: float = 0.0,
+        resid_pdrop: float = 0.0,
+    ) -> None:
         if embed_dim <= 0 or num_heads <= 0:
             raise ValueError("embed_dim and num_heads must be positive")
         if embed_dim % num_heads != 0:
@@ -316,6 +491,8 @@ class CausalSelfAttention(Module):
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
         self.scale = 1.0 / (self.head_dim**0.5)
+        self.attn_pdrop = attn_pdrop
+        self.resid_pdrop = resid_pdrop
 
         # Xavier for Q, K, V, and output projections
         std = (2.0 / (embed_dim + embed_dim)) ** 0.5
@@ -327,6 +504,9 @@ class CausalSelfAttention(Module):
         self.bk = zeros((embed_dim,), requires_grad=True)
         self.bv = zeros((embed_dim,), requires_grad=True)
         self.bo = zeros((embed_dim,), requires_grad=True)
+
+        self.attn_dropout = Dropout(p=attn_pdrop) if attn_pdrop > 0 else None
+        self.resid_dropout = Dropout(p=resid_pdrop) if resid_pdrop > 0 else None
 
     def __call__(self, x: Tensor) -> Tensor:
         """
@@ -357,26 +537,36 @@ class CausalSelfAttention(Module):
         # q, k, v: (B, H, S, D)
 
         scores = q.bmm(k.transpose4d_last2())
-        scores = scores.scale(self.scale)
-        scores = scores.apply_causal_mask()
-        attn = scores.softmax(dim=-1)
+        # In-place scale reuses the bmm-output buffer (no new (B,H,S,S) alloc).
+        # Fused mask+softmax does mask + softmax in one kernel — no intermediate
+        # masked-scores tensor. Together: 2 × (B,H,S,S) saved per layer vs. original.
+        scores = scores.scale_inplace(self.scale)
+        attn = scores.softmax_with_causal_mask()
+        if self.attn_dropout is not None:
+            attn = self.attn_dropout(attn)
         ctx = attn.bmm(v)
         # ctx: (B, H, S, D)
         ctx = ctx.transpose4d_12().view((B, S, E))
         ctx_flat = ctx.view((B * S, E))
         out_flat = ctx_flat.linear(self.Wo, self.bo)
+        if self.resid_dropout is not None:
+            out_flat = self.resid_dropout(out_flat)
         return out_flat.view((B, S, E))
 
     def parameters(self) -> list[Tensor]:
         return [
-            self.Wq, self.Wk, self.Wv, self.Wo,
-            self.bq, self.bk, self.bv, self.bo,
+            self.Wq,
+            self.Wk,
+            self.Wv,
+            self.Wo,
+            self.bq,
+            self.bk,
+            self.bv,
+            self.bo,
         ]
 
     def __repr__(self) -> str:
-        return (
-            f"CausalSelfAttention(embed_dim={self.embed_dim}, num_heads={self.num_heads})"
-        )
+        return f"CausalSelfAttention(embed_dim={self.embed_dim}, num_heads={self.num_heads})"
 
 
 class Conv2d(Module):

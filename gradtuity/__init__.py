@@ -1,32 +1,43 @@
 """Gradtuity: From-scratch tensor autograd engine with Triton kernels."""
 
-from .tensor import Tensor
 from .functional import (
-    zeros,
-    zeros_like,
-    ones,
-    ones_like,
-    randn,
     full,
     full_like,
     one_hot,
-    zero_grad,
+    ones,
+    ones_like,
+    randn,
     sgd_step,
+    zero_grad,
+    zeros,
+    zeros_like,
 )
 from .nn import (
     CNN,
+    MLP,
     CausalSelfAttention,
     Conv2d,
+    Dropout,
     Embedding,
     Flatten,
     LayerNorm,
     Linear,
     MaxPool2d,
-    MLP,
     Module,
+    PositionalEmbedding,
+    TiedLMHead,
 )
-from .optim import AdamW, Optimizer, SGD, clip_grad_norm_
+from .optim import SGD, AdamW, Optimizer, clip_grad_norm_
+from .random import (
+    DropoutRNG,
+    default_rng,
+    dropout_rng_state_dict,
+    load_dropout_rng_state,
+)
+from .checkpoint import checkpoint
+from .tensor import Tensor
 from .tensor_io import load_safetensors, save_safetensors
+from .tokenizer import Tokenizer
 
 __all__ = [
     "Tensor",
@@ -43,7 +54,10 @@ __all__ = [
     "Module",
     "Linear",
     "Flatten",
+    "Dropout",
     "Embedding",
+    "PositionalEmbedding",
+    "TiedLMHead",
     "CausalSelfAttention",
     "Conv2d",
     "MaxPool2d",
@@ -56,4 +70,10 @@ __all__ = [
     "clip_grad_norm_",
     "save_safetensors",
     "load_safetensors",
+    "DropoutRNG",
+    "default_rng",
+    "dropout_rng_state_dict",
+    "load_dropout_rng_state",
+    "Tokenizer",
+    "checkpoint",
 ]

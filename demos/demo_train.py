@@ -14,7 +14,7 @@ Usage:
     uv run python -m gradtuity.demo_train
 """
 
-from gradtuity import SGD, Tensor, randn
+from gradtuity import SGD, randn
 
 
 def main():
@@ -31,7 +31,7 @@ def main():
     learning_rate = 0.001
     num_iterations = 100
 
-    print(f"Configuration:")
+    print("Configuration:")
     print(f"  Batch size:    {batch_size}")
     print(f"  In features:   {in_features}")
     print(f"  Out features:  {out_features}")

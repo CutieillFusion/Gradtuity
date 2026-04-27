@@ -6,6 +6,7 @@ These tests require a CUDA-enabled GPU to run.
 
 import json
 import struct
+
 import pytest
 
 from gradtuity.tensor import Tensor
