@@ -27,8 +27,10 @@ module load cuda/12.9
 
 # CUDA/NCCL from venv (uv/pip install nvidia-*)
 VENV_LIB=".venv/lib/python3.12/site-packages/nvidia"
-export LD_LIBRARY_PATH="${VENV_LIB}/cuda_runtime/lib:${VENV_LIB}/nccl/lib:$LD_LIBRARY_PATH"
+export LD_LIBRARY_PATH="${VENV_LIB}/cuda_runtime/lib:${VENV_LIB}/cuda_nvrtc/lib:${VENV_LIB}/nccl/lib:$LD_LIBRARY_PATH"
 export GRADTUITY_NCCL_LIBRARY="libnccl.so.2"
 export GRADTUITY_LIBCUDART_LIBRARY="libcudart.so"
+export GRADTUITY_LIBNVRTC_LIBRARY="libnvrtc.so.12"
+export GRADTUITY_LIBCUDA_LIBRARY="libcuda.so.1"
 
 srun --partition=$PARTITION --time=08:00:00 --gres=gpu:$GPU_COUNT --cpus-per-task=32 --mem=200G --account=undergrad_research --pty bash

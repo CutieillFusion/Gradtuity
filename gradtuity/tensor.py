@@ -26,13 +26,36 @@ from .cuda_mem import (
     cuda_memcpy_htod,
     cuda_memset,
 )
-from .kernels.conv_kernels import col2im_kernel, im2col_kernel_2d
-from .kernels.dropout_kernels import dropout_backward_kernel, dropout_forward_kernel
-from .kernels.elemwise_kernels import (
+from .kernels import (
+    add_bias_kernel,
     add_inplace_kernel,
     add_kernel,
+    add_scalar_inplace_kernel,
+    argmax_axis1_kernel,
+    causal_mask_backward_kernel,
+    causal_mask_inplace_kernel,
+    col2im_kernel,
+    cross_entropy_backward_kernel,
+    cross_entropy_forward_kernel,
+    dropout_backward_kernel,
+    dropout_forward_kernel,
+    embedding_gather_kernel,
+    embedding_scatter_add_kernel,
+    fill_kernel,
     gelu_backward_kernel,
     gelu_kernel,
+    im2col_kernel_2d,
+    layernorm_bwd_kernel,
+    layernorm_fwd_kernel,
+    matmul_bias_kernel,
+    matmul_bias_relu_kernel,
+    matmul_kernel,
+    matmul_nt_acc_kernel,
+    matmul_tn_acc_kernel,
+    maxpool2d_backward_kernel,
+    maxpool2d_forward_kernel,
+    mse_loss_backward_kernel,
+    mse_loss_kernel,
     mul_backward_kernel,
     mul_kernel,
     mul_scalar_inplace_kernel,
@@ -41,44 +64,13 @@ from .kernels.elemwise_kernels import (
     relu_kernel,
     relu_mask_mul_kernel,
     scale_backward_kernel,
-)
-from .kernels.gather_kernels import (
-    embedding_gather_kernel,
-    embedding_scatter_add_kernel,
-)
-from .kernels.layernorm_kernels import layernorm_bwd_kernel, layernorm_fwd_kernel
-from .kernels.loss_kernels import (
-    cross_entropy_backward_kernel,
-    cross_entropy_forward_kernel,
-    mse_loss_backward_kernel,
-    mse_loss_kernel,
-)
-from .kernels.mask_kernels import (
-    causal_mask_backward_kernel,
-    causal_mask_inplace_kernel,
-    transpose4d_12_kernel,
-)
-from .kernels.matmul_kernels import (
-    matmul_bias_kernel,
-    matmul_bias_relu_kernel,
-    matmul_kernel,
-    matmul_nt_acc_kernel,
-    matmul_tn_acc_kernel,
-    transpose2d_kernel,
-)
-from .kernels.optim_kernels import fill_kernel
-from .kernels.pool_kernels import maxpool2d_backward_kernel, maxpool2d_forward_kernel
-from .kernels.reduce_kernels import (
-    add_bias_kernel,
-    add_scalar_inplace_kernel,
-    argmax_axis1_kernel,
-    sum_all_kernel,
-    sum_axis0_kernel,
-)
-from .kernels.softmax_kernels import (
     softmax_backward_kernel,
     softmax_forward_kernel,
     softmax_with_causal_mask_forward_kernel,
+    sum_all_kernel,
+    sum_axis0_kernel,
+    transpose2d_kernel,
+    transpose4d_12_kernel,
 )
 from .random import DropoutRNG, default_rng
 

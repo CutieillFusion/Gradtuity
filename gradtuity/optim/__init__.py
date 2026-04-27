@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 import triton
 
 from ..cuda_mem import cuda_memset
-from ..kernels.optim_kernels import adamw_step_kernel, sgd_update_kernel
+from ..kernels import adamw_step_kernel, sgd_update_kernel
 from ..tensor import Tensor
 from ..tensor_io import load_safetensors, save_safetensors
 from .utils import clip_grad_norm_

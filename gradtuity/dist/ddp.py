@@ -13,7 +13,7 @@ import os
 from .. import cuda_mem
 from ..tensor import ensure_grad
 from ..tensor import BLOCK, grid1d
-from ..kernels.elemwise_kernels import mul_scalar_kernel
+from ..kernels import mul_scalar_kernel
 from . import comm
 from . import env as dist_env
 

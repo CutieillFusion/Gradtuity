@@ -4,6 +4,11 @@ Pytest configuration for gradtuity tests.
 Provides capability checks (CUDA, Triton, NCCL, multi-GPU) and skips tests
 marked requires_cuda, requires_triton, requires_nccl, or requires_multigpu
 when the corresponding capability is not available.
+
+Also auto-parametrizes every test over both kernel backends (Triton + CUDA-C)
+in a single pytest process, by flipping ``gradtuity.kernels.dispatch`` state
+between tests. Mark a test ``kernel_backend_agnostic`` to opt out of the CUDA
+repetition (used by the parity tests that exercise both backends explicitly).
 """
 
 import ctypes
@@ -71,3 +76,36 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip_nccl)
         if "requires_multigpu" in item.keywords and not MULTIGPU_AVAILABLE:
             item.add_marker(skip_multigpu)
+
+
+# ---------------------------------------------------------------------------
+# Backend parametrization
+#
+# ``gradtuity.kernels.dispatch.set_backend`` flips which backend the higher-
+# level Tensor / nn / training tests route through, so a single pytest process
+# exercises both code paths for every test. Mark a test
+# ``kernel_backend_agnostic`` to opt out of the CUDA repetition — used by the
+# kernel-pair parity tests that already exercise both backends within a
+# single test body.
+# ---------------------------------------------------------------------------
+_BACKEND_OPT_OUT = os.environ.get("GRADTUITY_TEST_BACKENDS")
+
+
+@pytest.fixture(autouse=True, params=["triton", "cuda"])
+def _kernel_backend(request):
+    if _BACKEND_OPT_OUT and request.param not in _BACKEND_OPT_OUT.split(","):
+        # Caller restricted the backends explicitly (e.g., for fast local
+        # iteration: ``GRADTUITY_TEST_BACKENDS=triton pytest``).
+        pytest.skip(f"backend {request.param!r} not in GRADTUITY_TEST_BACKENDS")
+    if request.param == "cuda":
+        if not CUDA_AVAILABLE:
+            pytest.skip("CUDA backend selected but CUDA runtime not available")
+        if request.node.get_closest_marker("kernel_backend_agnostic"):
+            pytest.skip("backend-agnostic test; one backend is enough")
+    from gradtuity import kernels as dispatch
+    old = dispatch.active_backend()
+    dispatch.set_backend(request.param)
+    try:
+        yield request.param
+    finally:
+        dispatch.set_backend(old)
